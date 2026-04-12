@@ -106,12 +106,30 @@ else
     exit 1
 fi
 
-# Python venv
+# Python venv — create and install deps automatically if missing
 if [[ -f "${BRIDGE_DIR}/.venv/bin/python3" ]]; then
     pass "Python venv: ${BRIDGE_DIR}/.venv"
 else
-    skip "Python venv not found at ${BRIDGE_DIR}/.venv"
-    info "Create it: cd ${BRIDGE_DIR} && python3 -m venv .venv && .venv/bin/pip install -r bridge/requirements.txt"
+    info "Python venv not found — creating it now..."
+    if python3 -m venv "${BRIDGE_DIR}/.venv" 2>&1 | sed 's/^/    /'; then
+        pass "Python venv created: ${BRIDGE_DIR}/.venv"
+    else
+        fail "Failed to create Python venv at ${BRIDGE_DIR}/.venv"
+        exit 1
+    fi
+fi
+
+# Core requirements — install/upgrade if needed
+if "${BRIDGE_DIR}/.venv/bin/python3" -c "import aiohttp" &>/dev/null 2>&1; then
+    pass "Core requirements installed (aiohttp present)"
+else
+    info "Installing core requirements from bridge/requirements.txt..."
+    if "${BRIDGE_DIR}/.venv/bin/pip" install -q -r "${BRIDGE_DIR}/bridge/requirements.txt" 2>&1 | tail -5 | sed 's/^/    /'; then
+        pass "Core requirements installed"
+    else
+        fail "pip install failed — check network or bridge/requirements.txt"
+        exit 1
+    fi
 fi
 
 # Bridge package
@@ -322,15 +340,15 @@ case "${VOICE_PROVIDER}" in
         ;;
 
     "pipecat-dc"|"pipecat-de")
-        # pipecat-ai package
-        if "${BRIDGE_DIR}/.venv/bin/python3" -c "import pipecat" &>/dev/null 2>&1; then
-            pass "pipecat-ai installed in venv"
+        # aiohttp (required for direct REST calls to cloud providers)
+        if "${BRIDGE_DIR}/.venv/bin/python3" -c "import aiohttp" &>/dev/null 2>&1; then
+            pass "aiohttp installed in venv (cloud REST provider)"
         else
-            fail "pipecat-ai not installed"
-            if [[ "${VOICE_PROVIDER}" == "pipecat-dc" ]]; then
-                info "Install: ${BRIDGE_DIR}/.venv/bin/pip install 'pipecat-ai[deepgram,cartesia]'"
+            info "aiohttp missing — installing requirements..."
+            if "${BRIDGE_DIR}/.venv/bin/pip" install -q -r "${BRIDGE_DIR}/bridge/requirements.txt"; then
+                pass "aiohttp installed"
             else
-                info "Install: ${BRIDGE_DIR}/.venv/bin/pip install 'pipecat-ai[deepgram,elevenlabs]'"
+                fail "pip install failed"
             fi
         fi
 
@@ -375,7 +393,7 @@ echo ""
 
 BRIDGE_LOG=$(cd "${BRIDGE_DIR}" && \
     PIDOG_SIMULATE=true PIDOG_VOICE_PROVIDER=text \
-    timeout 5 .venv/bin/python3 -m bridge 2>&1 || true)
+    timeout --kill-after=2 5 .venv/bin/python3 -m bridge </dev/null 2>&1 || true)
 
 echo "${BRIDGE_LOG}" | head -15 | sed 's/^/    /'
 echo ""
@@ -586,9 +604,8 @@ echo -e "  ${RED}pidog library not found${NC}"
 echo -e "     ${DIM}→ pip install pidog  (or ensure SunFounder lib is installed)${NC}"
 echo -e "     ${DIM}→ Use PIDOG_SIMULATE=true on non-PiDog hardware${NC}"
 echo ""
-echo -e "  ${RED}pipecat-ai not installed${NC}"
-echo -e "     ${DIM}→ .venv/bin/pip install 'pipecat-ai[deepgram,cartesia]'${NC}"
-echo -e "     ${DIM}→ or 'pipecat-ai[deepgram,elevenlabs]' for ElevenLabs${NC}"
+echo -e "  ${RED}aiohttp not installed${NC} (cloud voice REST calls fail)"
+echo -e "     ${DIM}→ .venv/bin/pip install -r ${BRIDGE_DIR}/bridge/requirements.txt${NC}"
 echo ""
 echo -e "  ${RED}Action queue full${NC}"
 echo -e "     ${DIM}→ Increase PIDOG_ACTION_TIMEOUT (default 10.0s)${NC}"
