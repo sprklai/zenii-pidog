@@ -263,13 +263,17 @@ fi
 step "Testing chat (asking Buddy who he is)"
 
 echo ""
-RESPONSE=$(curl -sf -X POST "${ZENII_URL}/chat" \
+RESPONSE=$(curl -sf --max-time 120 -X POST "${ZENII_URL}/chat" \
     -H "Content-Type: application/json" \
-    -d '{"prompt": "Hey Buddy, who are you? Keep it short."}' | jq -r '.response // .')
+    -d '{"prompt": "Hey Buddy, who are you? Keep it short."}' 2>/dev/null | jq -r '.response // empty' || echo "(no response)")
 
 echo -e "  ${BOLD}Buddy says:${NC} ${RESPONSE}"
 echo ""
-ok "Chat is working"
+if [[ "${RESPONSE}" != "(no response)" ]]; then
+    ok "Chat is working"
+else
+    warn "Chat did not return a response — check daemon logs: journalctl -u zenii-pidog -f"
+fi
 
 # =============================================================================
 # Step 8: Memory persistence demo
@@ -277,7 +281,7 @@ ok "Chat is working"
 step "Testing memory persistence"
 
 info "Storing a memory..."
-curl -sf -X POST "${ZENII_URL}/memory" \
+curl -sf --max-time 10 -X POST "${ZENII_URL}/memory" \
     -H "Content-Type: application/json" \
     -d '{"key": "owner_info", "content": "My owner is Neil. He loves building robots and tinkering with Raspberry Pi."}' > /dev/null
 
@@ -285,13 +289,17 @@ ok "Memory stored"
 
 info "Asking Buddy to recall..."
 echo ""
-RECALL=$(curl -sf -X POST "${ZENII_URL}/chat" \
+RECALL=$(curl -sf --max-time 120 -X POST "${ZENII_URL}/chat" \
     -H "Content-Type: application/json" \
-    -d '{"prompt": "What do you know about your owner?"}' | jq -r '.response // .')
+    -d '{"prompt": "What do you know about your owner?"}' 2>/dev/null | jq -r '.response // empty' || echo "(no response)")
 
 echo -e "  ${BOLD}Buddy says:${NC} ${RECALL}"
 echo ""
-ok "Memory recall working"
+if [[ "${RECALL}" != "(no response)" ]]; then
+    ok "Memory recall working"
+else
+    warn "Memory recall did not return a response"
+fi
 
 # =============================================================================
 # Step 9: Personality swap demo
