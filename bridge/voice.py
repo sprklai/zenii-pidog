@@ -199,9 +199,12 @@ class CloudVoice(VoiceInterface):
                 dtype="int16",
                 blocking=True,
             )
-            # Discard silent recordings (RMS < 100 out of 32768) to avoid wasting API quota
+            # Discard silent recordings to avoid wasting API quota.
+            # silence_threshold is a 0.0-1.0 fraction of int16 max (32767).
+            # Default 0.3 → RMS threshold ~9830, filtering out ambient noise.
             rms = int(np.sqrt(np.mean(audio.astype("float32") ** 2)))
-            if rms < 100:
+            threshold = int(self._config.silence_threshold * 32767)
+            if rms < threshold:
                 return None
             return audio.tobytes()
         except Exception as exc:
@@ -284,7 +287,14 @@ class CloudVoice(VoiceInterface):
             headers=headers,
             data=audio_bytes,
         ) as resp:
-            resp.raise_for_status()
+            if resp.status != 200:
+                body = await resp.text()
+                logger.warning(
+                    "Deepgram STT error %d: %s",
+                    resp.status,
+                    body[:300],
+                )
+                return None
             data = await resp.json()
             alts = (
                 data.get("results", {})

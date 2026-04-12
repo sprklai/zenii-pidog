@@ -333,6 +333,8 @@ esac
 
     echo ""
     echo "# Optional tuning (uncomment to override defaults)"
+    echo "# listen_timeout_secs = 5.0       # recording window per utterance (seconds)"
+    echo "# silence_threshold = 0.3         # 0.0-1.0 fraction of int16 max; filters ambient noise"
     echo "# sensor_interval_secs = 2.0"
     echo "# memory_throttle_secs = 30.0"
     echo "# obstacle_alert_cm = 15"

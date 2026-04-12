@@ -65,8 +65,11 @@ class BridgeConfig:
     stt_model_path: str = ""
     tts_model: str = "en_US-ryan-low"
     tts_binary: str = "piper"
+    # Silence threshold as fraction of int16 max (0.0-1.0).
+    # 0.3 → RMS ~9830 — filters ambient noise, requires actual speech.
     silence_threshold: float = 0.3
-    listen_timeout_secs: float = 30.0
+    # Recording window in seconds. 5s is suitable for short voice commands.
+    listen_timeout_secs: float = 5.0
 
     # Pipecat cloud voice
     pipecat_stt_provider: str = "deepgram"
@@ -236,6 +239,17 @@ class BridgeConfig:
         voice = data.get("voice", {})
         if "provider" in voice:
             self.voice_provider = voice["provider"]
+
+        # [voice.local] section (toml key "stt_model" maps to field stt_model_path)
+        local = voice.get("local", {})
+        local_map = {
+            "stt_model": "stt_model_path",
+            "tts_model": "tts_model",
+            "tts_binary": "tts_binary",
+        }
+        for toml_key, attr in local_map.items():
+            if toml_key in local:
+                setattr(self, attr, local[toml_key])
 
         # [voice.pipecat] section
         pipecat = voice.get("pipecat", data.get("pipecat", {}))
