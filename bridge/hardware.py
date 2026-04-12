@@ -92,19 +92,35 @@ class RealHardware(HardwareInterface):
         self._action_lock = asyncio.Lock()
         logger.info("PiDog2 hardware initialized")
 
+    def _read_imu_sync(self) -> tuple[float, float, float]:
+        """Read pitch/roll/yaw from IMU. Tries common pidog IMU API patterns."""
+        imu = self._dog.imu
+        # Try attitude properties first (most accurate)
+        if hasattr(imu, "pitch") and hasattr(imu, "roll"):
+            return float(imu.pitch or 0.0), float(imu.roll or 0.0), float(getattr(imu, "yaw", 0.0) or 0.0)
+        # Try get_accel / get_imu style
+        for method in ("get_accel", "read_imu", "read_accel"):
+            fn = getattr(imu, method, None)
+            if callable(fn):
+                data = fn()
+                if data and len(data) >= 2:
+                    return float(data[0]), float(data[1]), float(data[2]) if len(data) > 2 else 0.0
+        return 0.0, 0.0, 0.0
+
     def _read_sensors_sync(self) -> SensorReading:
         distance = self._dog.ultrasonic.read_distance()
         touch = self._dog.dual_touch.read()
-        sound_dir = self._dog.sound_direction.read_direction()
-        accel = self._dog.imu.read_accel()
+        # sound_direction.read() returns degrees 0-359 or -1 if not detected
+        sound_dir = self._dog.sound_direction.read()
+        pitch, roll, yaw = self._read_imu_sync()
 
         return SensorReading(
             distance_cm=int(distance) if distance is not None else 999,
-            touch=str(touch) if touch else "none",
-            sound_direction_deg=int(sound_dir) if sound_dir is not None else 0,
-            pitch=float(accel[0]) if accel else 0.0,
-            roll=float(accel[1]) if accel else 0.0,
-            yaw=float(accel[2]) if len(accel) > 2 else 0.0,
+            touch=str(touch) if touch and touch != "N" else "none",
+            sound_direction_deg=int(sound_dir) if sound_dir and sound_dir >= 0 else 0,
+            pitch=pitch,
+            roll=roll,
+            yaw=yaw,
             timestamp=time.time(),
         )
 
@@ -113,20 +129,18 @@ class RealHardware(HardwareInterface):
 
     async def execute_action(self, action: PiDogAction) -> None:
         async with self._action_lock:
-            speed = action.speed
-            # Movement actions take speed param; posture/expression actions don't
-            movement_actions = {"forward", "backward", "turn_left", "turn_right"}
-            if action.action in movement_actions:
-                await asyncio.to_thread(
-                    self._dog.do_action, action.action, speed=speed
-                )
-            else:
-                await asyncio.to_thread(self._dog.do_action, action.action)
+            await asyncio.to_thread(
+                self._dog.do_action, action.action, speed=action.speed
+            )
 
     async def set_leds(self, cmd: LEDCommand) -> None:
         r, g, b = _hex_to_rgb(cmd.color)
+        # set_mode(style, color, bps, brightness)
+        # brightness: 0-1 float; bps: beats-per-second for animated modes
+        brightness = max(0.0, min(1.0, cmd.brightness / 100.0))
+        bps = 1.0  # one cycle per second for breath/blink modes
         await asyncio.to_thread(
-            self._rgb.set_mode, cmd.mode, (r, g, b), cmd.brightness
+            self._rgb.set_mode, cmd.mode, (r, g, b), bps, brightness
         )
 
     async def close(self) -> None:

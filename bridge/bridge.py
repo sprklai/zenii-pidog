@@ -193,6 +193,7 @@ class PiDogZeniiBridge:
             try:
                 text = await self._voice.listen()
                 if text is None:
+                    await asyncio.sleep(0.05)
                     continue
 
                 logger.info("User: %s", text)

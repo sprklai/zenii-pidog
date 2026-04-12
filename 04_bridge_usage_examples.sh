@@ -590,13 +590,33 @@ if command -v systemctl &>/dev/null; then
             echo -e "  ${DIM}Environment=PIDOG_VOICE_PROVIDER=pipecat${NC}"
             echo -e "  ${DIM}Environment=PIPECAT_STT_PROVIDER=deepgram${NC}"
             echo -e "  ${DIM}Environment=PIPECAT_TTS_PROVIDER=cartesia${NC}"
-            echo -e "  ${DIM}# API keys are in Zenii credential store (no plaintext in service file)${NC}"
+            echo -e "  ${DIM}Environment=PIPECAT_STT_API_KEY=your-deepgram-key${NC}"
+            echo -e "  ${DIM}Environment=PIPECAT_TTS_API_KEY=your-cartesia-key${NC}"
+            if [[ -n "${PIPECAT_TTS_VOICE:-}" ]]; then
+                echo -e "  ${DIM}Environment=PIPECAT_TTS_VOICE=${PIPECAT_TTS_VOICE}${NC}"
+            fi
+            echo ""
+            echo -e "  ${YELLOW}Note:${NC} ${DIM}Replace placeholder values with real API keys.${NC}"
+            echo -e "  ${DIM}Tip: store keys in a protected env file instead:${NC}"
+            echo -e "  ${DIM}  echo 'PIPECAT_STT_API_KEY=...' >> /etc/pidog-bridge.env${NC}"
+            echo -e "  ${DIM}  chmod 600 /etc/pidog-bridge.env${NC}"
+            echo -e "  ${DIM}  Add to service: EnvironmentFile=/etc/pidog-bridge.env${NC}"
             ;;
         "pipecat-de")
             echo -e "  ${DIM}Environment=PIDOG_VOICE_PROVIDER=pipecat${NC}"
             echo -e "  ${DIM}Environment=PIPECAT_STT_PROVIDER=deepgram${NC}"
             echo -e "  ${DIM}Environment=PIPECAT_TTS_PROVIDER=elevenlabs${NC}"
-            echo -e "  ${DIM}# API keys are in Zenii credential store (no plaintext in service file)${NC}"
+            echo -e "  ${DIM}Environment=PIPECAT_STT_API_KEY=your-deepgram-key${NC}"
+            echo -e "  ${DIM}Environment=PIPECAT_TTS_API_KEY=your-elevenlabs-key${NC}"
+            if [[ -n "${PIPECAT_TTS_VOICE:-}" ]]; then
+                echo -e "  ${DIM}Environment=PIPECAT_TTS_VOICE=${PIPECAT_TTS_VOICE}${NC}"
+            fi
+            echo ""
+            echo -e "  ${YELLOW}Note:${NC} ${DIM}Replace placeholder values with real API keys.${NC}"
+            echo -e "  ${DIM}Tip: store keys in a protected env file instead:${NC}"
+            echo -e "  ${DIM}  echo 'PIPECAT_STT_API_KEY=...' >> /etc/pidog-bridge.env${NC}"
+            echo -e "  ${DIM}  chmod 600 /etc/pidog-bridge.env${NC}"
+            echo -e "  ${DIM}  Add to service: EnvironmentFile=/etc/pidog-bridge.env${NC}"
             ;;
     esac
 else

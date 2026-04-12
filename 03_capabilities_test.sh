@@ -320,7 +320,7 @@ echo -e "${DIM}  > Stock: Treats every user identically forever.${NC}"
 # =============================================================================
 # 9. FULL API PROGRAMMABILITY
 # =============================================================================
-header "9" "114 API Routes" "Edit Python scripts. No API, no remote control."
+header "9" "133 API Routes" "Edit Python scripts. No API, no remote control."
 
 # Health
 api "${ZENII_URL}/health" > /dev/null && \
@@ -474,7 +474,7 @@ fi
 
 echo ""
 echo -e "  ${DIM}Stock PiDog: stateless ChatGPT wrapper, canned animations, no API${NC}"
-echo -e "  ${DIM}Zenii PiDog: persistent memory, swappable personality, 16 tools, 114 routes${NC}"
+echo -e "  ${DIM}Zenii PiDog: persistent memory, swappable personality, 16 tools, 133 routes${NC}"
 echo ""
 echo -e "  ${CYAN}${BOLD}PiDog is the body. Zenii is the brain.${NC}"
 echo ""
