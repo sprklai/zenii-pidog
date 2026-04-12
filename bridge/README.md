@@ -320,7 +320,7 @@ Every async operation has a timeout to prevent hanging:
 | "Microphone read failed" | No mic or wrong device | `arecord -l` to list devices, check ALSA config |
 | "TTS binary not found" | Piper not installed | See Step 2 (Install Piper) |
 | "pidog library not found" | SunFounder lib missing | `pip install pidog` or run on actual PiDog |
-| "pipecat-ai not installed" | Missing cloud deps | `pip install 'pipecat-ai[deepgram,cartesia]'` |
+| "aiohttp not installed" | Missing core dep | `pip install -r bridge/requirements.txt` |
 | "Action queue full" | Actions enqueued faster than executed | Increase `PIDOG_ACTION_TIMEOUT`, check servo response |
 | "Sensor read timed out" | I2C bus contention | Increase `PIDOG_SENSOR_READ_TIMEOUT` to 10s |
 | Bridge hangs on shutdown | Stuck servo command | Force kill: `kill -9`, then investigate hardware |

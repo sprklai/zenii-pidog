@@ -352,23 +352,6 @@ case "${VOICE_PROVIDER}" in
             fi
         fi
 
-        # pipecat-ai (cloud STT/TTS providers)
-        if "${BRIDGE_DIR}/.venv/bin/python3" -c "import pipecat" &>/dev/null 2>&1; then
-            pass "pipecat-ai installed in venv"
-        else
-            if [[ "${VOICE_PROVIDER}" == "pipecat-dc" ]]; then
-                _PIPECAT_EXTRAS="deepgram,cartesia"
-            else
-                _PIPECAT_EXTRAS="deepgram,elevenlabs"
-            fi
-            info "Installing pipecat-ai[${_PIPECAT_EXTRAS}]..."
-            if "${BRIDGE_DIR}/.venv/bin/pip" install -q "pipecat-ai[${_PIPECAT_EXTRAS}]" 2>&1 | tail -3 | sed 's/^/    /'; then
-                pass "pipecat-ai[${_PIPECAT_EXTRAS}] installed"
-            else
-                fail "pipecat-ai install failed — check network connection"
-            fi
-        fi
-
         # Verify Deepgram key in credential store
         CREDS_RESP=$(api "${ZENII_URL}/credentials" 2>&1)
         if echo "${CREDS_RESP}" | grep -q "api_key:deepgram"; then
@@ -405,34 +388,90 @@ esac
 # =============================================================================
 header "4" "Bridge Connectivity Test"
 echo ""
-info "Starting bridge for 5s to verify daemon connection (PIDOG_SIMULATE=true)..."
+info "Testing daemon connectivity (health, session, WebSocket) — no voice loops started..."
 echo ""
 
-_BRIDGE_LOG_FILE=$(mktemp)
-(
-    cd "${BRIDGE_DIR}" && \
-    PIDOG_SIMULATE=true PIDOG_VOICE_PROVIDER=text \
-    .venv/bin/python3 -m bridge </dev/null >"${_BRIDGE_LOG_FILE}" 2>&1
-) &
-_BRIDGE_PID=$!
-sleep 5
-kill -9 "${_BRIDGE_PID}" 2>/dev/null || true
-wait "${_BRIDGE_PID}" 2>/dev/null || true
-BRIDGE_LOG=$(cat "${_BRIDGE_LOG_FILE}")
-rm -f "${_BRIDGE_LOG_FILE}"
+_CONN_SCRIPT=$(mktemp --suffix=.py)
+cat > "${_CONN_SCRIPT}" << 'PYEOF'
+import asyncio, sys
 
-echo "${BRIDGE_LOG}" | head -15 | sed 's/^/    /'
+async def main():
+    try:
+        import aiohttp
+    except ImportError:
+        print("FAIL: aiohttp not installed")
+        sys.exit(1)
+
+    url = sys.argv[1]
+    token = sys.argv[2] if len(sys.argv) > 2 else ""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    sid = None
+
+    try:
+        async with aiohttp.ClientSession(headers=headers) as s:
+            # 1. Health check
+            async with s.get(f"{url}/health") as r:
+                d = await r.json()
+                status = d.get("status", "")
+                if status != "ok":
+                    print(f"FAIL: health returned status={status!r}")
+                    sys.exit(1)
+                print(f"  health:    ok")
+
+            # 2. Create session
+            async with s.post(f"{url}/sessions", json={"title": "bridge-connectivity-test"}) as r:
+                if r.status not in (200, 201):
+                    body = await r.text()
+                    print(f"FAIL: session create returned HTTP {r.status}: {body[:200]}")
+                    sys.exit(1)
+                d = await r.json()
+                sid = d.get("id") or d.get("session_id")
+                if not sid:
+                    print(f"FAIL: no session id in response: {d}")
+                    sys.exit(1)
+                print(f"  session:   created ({sid})")
+
+            # 3. WebSocket handshake
+            ws_url = url.replace("https://", "wss://").replace("http://", "ws://") + "/ws/chat"
+            async with s.ws_connect(ws_url) as ws:
+                print(f"  websocket: connected")
+                await ws.close()
+
+            # 4. Cleanup
+            if sid:
+                async with s.delete(f"{url}/sessions/{sid}") as r:
+                    pass
+
+            print("ALL_OK")
+
+    except aiohttp.ClientConnectorError as e:
+        print(f"FAIL: cannot connect to daemon — {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"FAIL: {type(e).__name__}: {e}")
+        sys.exit(1)
+
+asyncio.run(main())
+PYEOF
+
+BRIDGE_LOG=$("${BRIDGE_DIR}/.venv/bin/python3" "${_CONN_SCRIPT}" "${ZENII_URL}" "${ZENII_TOKEN:-}" 2>&1 || true)
+rm -f "${_CONN_SCRIPT}"
+
+echo "${BRIDGE_LOG}" | sed 's/^/    /'
 echo ""
 
-if echo "${BRIDGE_LOG}" | grep -qi "connected\|healthy\|waiting\|ready\|listening"; then
-    pass "Bridge connected to daemon successfully"
-elif echo "${BRIDGE_LOG}" | grep -qi "error\|refused\|failed\|cannot"; then
-    fail "Bridge connection error — check logs above"
+if echo "${BRIDGE_LOG}" | grep -q "ALL_OK"; then
+    pass "Daemon is reachable — health, session, and WebSocket all verified"
+elif echo "${BRIDGE_LOG}" | grep -qi "cannot connect\|connection refused"; then
+    fail "Daemon not reachable"
     info "Common fixes:"
-    info "  - Daemon not running: sudo systemctl start zenii-pidog"
-    info "  - Token mismatch: check ZENII_TOKEN matches daemon config"
+    info "  - Start daemon: sudo systemctl start zenii-pidog  (or: cargo run -p zenii-daemon)"
+    info "  - Check ZENII_URL=${ZENII_URL}"
+elif echo "${BRIDGE_LOG}" | grep -qi "401\|403\|unauthorized\|forbidden"; then
+    fail "Auth rejected — token mismatch"
+    info "Set ZENII_TOKEN to match the daemon's configured bearer token"
 else
-    pass "Bridge started without fatal errors"
+    fail "Connectivity test failed — see output above"
 fi
 
 # =============================================================================
