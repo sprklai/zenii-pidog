@@ -434,7 +434,7 @@ fi
 # =============================================================================
 # Step 9: Install Python bridge
 # =============================================================================
-BRIDGE_DIR="/home/pi/pidog-zenii"
+BRIDGE_DIR="${HOME}/pidog-zenii"
 step "Installing Python bridge"
 
 # Install system deps needed by the bridge
