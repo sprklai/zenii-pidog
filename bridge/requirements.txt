@@ -1,0 +1,16 @@
+# Core (always required)
+aiohttp>=3.9,<4
+
+# Local voice (Vosk STT + Piper TTS) — install for PIDOG_VOICE_PROVIDER=local
+vosk>=0.3.45
+sounddevice>=0.4
+numpy>=1.24
+
+# TOML config support for Python <3.11
+tomli>=2.0; python_version < "3.11"
+
+# --- Cloud voice (PIDOG_VOICE_PROVIDER=pipecat) ---
+# No extra packages needed — providers are called directly via REST (aiohttp).
+# Set PIPECAT_STT_API_KEY and PIPECAT_TTS_API_KEY before running.
+# Supported STT: deepgram, azure, google
+# Supported TTS: cartesia, elevenlabs, azure, google
