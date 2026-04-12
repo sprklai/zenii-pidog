@@ -342,13 +342,30 @@ case "${VOICE_PROVIDER}" in
     "pipecat-dc"|"pipecat-de")
         # aiohttp (required for direct REST calls to cloud providers)
         if "${BRIDGE_DIR}/.venv/bin/python3" -c "import aiohttp" &>/dev/null 2>&1; then
-            pass "aiohttp installed in venv (cloud REST provider)"
+            pass "aiohttp installed in venv"
         else
             info "aiohttp missing — installing requirements..."
             if "${BRIDGE_DIR}/.venv/bin/pip" install -q -r "${BRIDGE_DIR}/bridge/requirements.txt"; then
                 pass "aiohttp installed"
             else
                 fail "pip install failed"
+            fi
+        fi
+
+        # pipecat-ai (cloud STT/TTS providers)
+        if "${BRIDGE_DIR}/.venv/bin/python3" -c "import pipecat" &>/dev/null 2>&1; then
+            pass "pipecat-ai installed in venv"
+        else
+            if [[ "${VOICE_PROVIDER}" == "pipecat-dc" ]]; then
+                _PIPECAT_EXTRAS="deepgram,cartesia"
+            else
+                _PIPECAT_EXTRAS="deepgram,elevenlabs"
+            fi
+            info "Installing pipecat-ai[${_PIPECAT_EXTRAS}]..."
+            if "${BRIDGE_DIR}/.venv/bin/pip" install -q "pipecat-ai[${_PIPECAT_EXTRAS}]" 2>&1 | tail -3 | sed 's/^/    /'; then
+                pass "pipecat-ai[${_PIPECAT_EXTRAS}] installed"
+            else
+                fail "pipecat-ai install failed — check network connection"
             fi
         fi
 
@@ -391,9 +408,18 @@ echo ""
 info "Starting bridge for 5s to verify daemon connection (PIDOG_SIMULATE=true)..."
 echo ""
 
-BRIDGE_LOG=$(cd "${BRIDGE_DIR}" && \
+_BRIDGE_LOG_FILE=$(mktemp)
+(
+    cd "${BRIDGE_DIR}" && \
     PIDOG_SIMULATE=true PIDOG_VOICE_PROVIDER=text \
-    timeout --kill-after=2 5 .venv/bin/python3 -m bridge </dev/null 2>&1 || true)
+    .venv/bin/python3 -m bridge </dev/null >"${_BRIDGE_LOG_FILE}" 2>&1
+) &
+_BRIDGE_PID=$!
+sleep 5
+kill -9 "${_BRIDGE_PID}" 2>/dev/null || true
+wait "${_BRIDGE_PID}" 2>/dev/null || true
+BRIDGE_LOG=$(cat "${_BRIDGE_LOG_FILE}")
+rm -f "${_BRIDGE_LOG_FILE}"
 
 echo "${BRIDGE_LOG}" | head -15 | sed 's/^/    /'
 echo ""
@@ -605,7 +631,11 @@ echo -e "     ${DIM}→ pip install pidog  (or ensure SunFounder lib is installe
 echo -e "     ${DIM}→ Use PIDOG_SIMULATE=true on non-PiDog hardware${NC}"
 echo ""
 echo -e "  ${RED}aiohttp not installed${NC} (cloud voice REST calls fail)"
-echo -e "     ${DIM}→ .venv/bin/pip install -r ${BRIDGE_DIR}/bridge/requirements.txt${NC}"
+echo -e "     ${DIM}→ .venv/bin/pip install -r bridge/requirements.txt${NC}"
+echo ""
+echo -e "  ${RED}pipecat-ai not installed${NC} (cloud STT/TTS providers)"
+echo -e "     ${DIM}→ .venv/bin/pip install 'pipecat-ai[deepgram,cartesia]'${NC}"
+echo -e "     ${DIM}→ or 'pipecat-ai[deepgram,elevenlabs]' for ElevenLabs${NC}"
 echo ""
 echo -e "  ${RED}Action queue full${NC}"
 echo -e "     ${DIM}→ Increase PIDOG_ACTION_TIMEOUT (default 10.0s)${NC}"
