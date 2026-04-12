@@ -205,9 +205,9 @@ if [[ -n "${SESSION_ID}" ]]; then
     pass "Created session: ${SESSION_ID:0:16}..."
 
     # Send message in session
-    chat -X POST "${ZENII_URL}/sessions/${SESSION_ID}/chat" \
+    chat -X POST "${ZENII_URL}/chat" \
         -H "Content-Type: application/json" \
-        -d '{"prompt": "Remember this: the secret code is PIDOG42."}' > /dev/null && \
+        -d "{\"prompt\": \"Remember this: the secret code is PIDOG42.\", \"session_id\": \"${SESSION_ID}\"}" > /dev/null && \
         pass "Sent message in session" || fail "Send message"
 
     # Retrieve history
@@ -220,9 +220,9 @@ if [[ -n "${SESSION_ID}" ]]; then
     fi
 
     # Continue conversation (proves context is maintained)
-    CONTINUE_RESP=$(chat -X POST "${ZENII_URL}/sessions/${SESSION_ID}/chat" \
+    CONTINUE_RESP=$(chat -X POST "${ZENII_URL}/chat" \
         -H "Content-Type: application/json" \
-        -d '{"prompt": "What was the secret code I just told you?"}' 2>&1 | jq -r '.response // .')
+        -d "{\"prompt\": \"What was the secret code I just told you?\", \"session_id\": \"${SESSION_ID}\"}" 2>&1 | jq -r '.response // .')
     echo -e "  ${MAGENTA}Continued:${NC} ${CONTINUE_RESP:0:200}"
     pass "Session continuity maintained"
 else
