@@ -154,22 +154,19 @@ if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
     if [[ -n "${PIPECAT_STT_API_KEY:-}" ]]; then
         STT_API_KEY="${PIPECAT_STT_API_KEY}"
         pass "Deepgram key: from environment (PIPECAT_STT_API_KEY)"
-    elif "${DAEMON_UP}" && cred_exists "api_key:deepgram"; then
-        # Key exists in store but daemon never returns raw values.
-        # Use the env-var placeholder so user can set it at runtime.
-        STT_API_KEY='${PIPECAT_STT_API_KEY}'
-        info "Deepgram key: found in credential store (will be loaded at runtime)"
-        info "  → Set PIPECAT_STT_API_KEY in the systemd unit or shell before running"
     else
-        echo -n "  Enter Deepgram API key (or leave blank to set manually later): "
+        if "${DAEMON_UP}" && cred_exists "api_key:deepgram"; then
+            info "Deepgram key found in credential store (daemon cannot return raw values)"
+        fi
+        echo -n "  Enter Deepgram API key: "
         read -rs DG_KEY
         echo ""
         if [[ -n "${DG_KEY}" ]]; then
             STT_API_KEY="${DG_KEY}"
             pass "Deepgram key: entered"
         else
-            STT_API_KEY='${PIPECAT_STT_API_KEY}'
-            warn "No Deepgram key — placeholder written; set PIPECAT_STT_API_KEY before running"
+            STT_API_KEY=""
+            warn "No Deepgram key entered — STT will fail until you edit bridge_config.toml"
         fi
     fi
 
@@ -182,20 +179,19 @@ if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
     if [[ -n "${PIPECAT_TTS_API_KEY:-}" ]]; then
         TTS_API_KEY="${PIPECAT_TTS_API_KEY}"
         pass "${TTS_DISPLAY} key: from environment (PIPECAT_TTS_API_KEY)"
-    elif "${DAEMON_UP}" && cred_exists "${CRED_KEY}"; then
-        TTS_API_KEY='${PIPECAT_TTS_API_KEY}'
-        info "${TTS_DISPLAY} key: found in credential store (will be loaded at runtime)"
-        info "  → Set PIPECAT_TTS_API_KEY in the systemd unit or shell before running"
     else
-        echo -n "  Enter ${TTS_DISPLAY} API key (or leave blank to set manually later): "
+        if "${DAEMON_UP}" && cred_exists "${CRED_KEY}"; then
+            info "${TTS_DISPLAY} key found in credential store (daemon cannot return raw values)"
+        fi
+        echo -n "  Enter ${TTS_DISPLAY} API key: "
         read -rs TS_KEY
         echo ""
         if [[ -n "${TS_KEY}" ]]; then
             TTS_API_KEY="${TS_KEY}"
             pass "${TTS_DISPLAY} key: entered"
         else
-            TTS_API_KEY='${PIPECAT_TTS_API_KEY}'
-            warn "No ${TTS_DISPLAY} key — placeholder written; set PIPECAT_TTS_API_KEY before running"
+            TTS_API_KEY=""
+            warn "No ${TTS_DISPLAY} key entered — TTS will fail until you edit bridge_config.toml"
         fi
     fi
 

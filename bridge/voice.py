@@ -184,7 +184,7 @@ class CloudVoice(VoiceInterface):
     # -- Recording --
 
     def _record_audio_sync(self) -> bytes | None:
-        """Record raw PCM from microphone (blocking, runs in thread pool)."""
+        """Record raw PCM (int16, mono) from microphone (blocking, runs in thread pool)."""
         try:
             import numpy as np
             import sounddevice as sd  # type: ignore[import-untyped]
@@ -199,10 +199,42 @@ class CloudVoice(VoiceInterface):
                 dtype="int16",
                 blocking=True,
             )
+            # Discard silent recordings (RMS < 100 out of 32768) to avoid wasting API quota
+            rms = int(np.sqrt(np.mean(audio.astype("float32") ** 2)))
+            if rms < 100:
+                return None
             return audio.tobytes()
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
             return None
+
+    @staticmethod
+    def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int) -> bytes:
+        """Wrap raw int16 mono PCM in a minimal WAV container."""
+        import struct
+        num_samples = len(pcm_bytes) // 2
+        num_channels = 1
+        bits_per_sample = 16
+        byte_rate = sample_rate * num_channels * bits_per_sample // 8
+        block_align = num_channels * bits_per_sample // 8
+        data_size = len(pcm_bytes)
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            36 + data_size,
+            b"WAVE",
+            b"fmt ",
+            16,          # PCM chunk size
+            1,           # PCM format
+            num_channels,
+            sample_rate,
+            byte_rate,
+            block_align,
+            bits_per_sample,
+            b"data",
+            data_size,
+        )
+        return header + pcm_bytes
 
     # -- STT --
 
@@ -237,10 +269,14 @@ class CloudVoice(VoiceInterface):
         params = {
             "model": self._config.pipecat_stt_model or "nova-2",
             "smart_format": "true",
+            # Tell Deepgram the exact encoding so no WAV header is needed
+            "encoding": "linear16",
+            "sample_rate": str(self._config.pipecat_sample_rate),
+            "channels": "1",
         }
         headers = {
             "Authorization": f"Token {self._config.pipecat_stt_api_key}",
-            "Content-Type": "audio/wav",
+            "Content-Type": "audio/raw",
         }
         async with self._get_http().post(
             "https://api.deepgram.com/v1/listen",
@@ -259,7 +295,7 @@ class CloudVoice(VoiceInterface):
             return text or None
 
     async def _stt_azure(self, audio_bytes: bytes) -> str | None:
-        """POST raw audio to Azure Cognitive Services Speech-to-Text.
+        """POST WAV audio to Azure Cognitive Services Speech-to-Text.
 
         pipecat_stt_model is used as the Azure region (e.g. 'eastus').
         """
@@ -271,9 +307,10 @@ class CloudVoice(VoiceInterface):
         )
         headers = {
             "Ocp-Apim-Subscription-Key": self._config.pipecat_stt_api_key,
-            "Content-Type": "audio/wav",
+            "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
         }
-        async with self._get_http().post(url, headers=headers, data=audio_bytes) as resp:
+        wav_bytes = self._pcm_to_wav(audio_bytes, self._config.pipecat_sample_rate)
+        async with self._get_http().post(url, headers=headers, data=wav_bytes) as resp:
             resp.raise_for_status()
             data = await resp.json()
             if data.get("RecognitionStatus") == "Success":
