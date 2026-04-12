@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"<pidog_(?:action|leds)>.*?</pidog_(?:action|leds)>", re.DOTALL)
 
 
+class _SttConfigError(Exception):
+    """Raised when the STT circuit breaker trips on repeated 4xx responses."""
+
+
 def strip_action_tags(text: str) -> str:
     """Remove all pidog XML tags from text before speaking."""
     return _TAG_RE.sub("", text).strip()
@@ -163,11 +167,29 @@ class CloudVoice(VoiceInterface):
     Audio capture/playback uses sounddevice + numpy.
     """
 
+    # After this many consecutive STT 4xx responses the bridge raises a fatal
+    # ConfigurationError so the operator sees a clear message instead of an
+    # infinite retry loop.
+    _STT_FAULT_LIMIT = 5
+
     def __init__(self, config: BridgeConfig, executor: ThreadPoolExecutor) -> None:
         self._config = config
         self._executor = executor
         self._speak_lock = asyncio.Lock()
         self._http: aiohttp.ClientSession | None = None
+        self._stt_fault_count = 0  # consecutive 4xx counter
+
+        if not config.pipecat_stt_api_key:
+            raise RuntimeError(
+                f"STT API key is empty (provider={config.pipecat_stt_provider}).\n"
+                "  Set stt_api_key in bridge_config.toml  or  PIPECAT_STT_API_KEY env var."
+            )
+        if not config.pipecat_tts_api_key:
+            raise RuntimeError(
+                f"TTS API key is empty (provider={config.pipecat_tts_provider}).\n"
+                "  Set tts_api_key in bridge_config.toml  or  PIPECAT_TTS_API_KEY env var."
+            )
+
         logger.info(
             "CloudVoice ready (STT=%s, TTS=%s)",
             config.pipecat_stt_provider,
@@ -252,14 +274,20 @@ class CloudVoice(VoiceInterface):
         provider = self._config.pipecat_stt_provider.lower()
         try:
             if provider == "deepgram":
-                return await self._stt_deepgram(audio_bytes)
+                result = await self._stt_deepgram(audio_bytes)
             elif provider == "azure":
-                return await self._stt_azure(audio_bytes)
+                result = await self._stt_azure(audio_bytes)
             elif provider == "google":
-                return await self._stt_google(audio_bytes)
+                result = await self._stt_google(audio_bytes)
             else:
                 logger.warning("Unknown STT provider: %s", provider)
                 return None
+            # Successful call — reset fault counter
+            self._stt_fault_count = 0
+            return result
+        except _SttConfigError as exc:
+            # 4xx circuit breaker tripped — propagate as fatal
+            raise RuntimeError(str(exc)) from exc
         except asyncio.TimeoutError:
             logger.warning("Cloud STT timed out")
             return None
@@ -294,6 +322,14 @@ class CloudVoice(VoiceInterface):
                     resp.status,
                     body[:300],
                 )
+                if 400 <= resp.status < 500:
+                    self._stt_fault_count += 1
+                    if self._stt_fault_count >= self._STT_FAULT_LIMIT:
+                        raise _SttConfigError(
+                            f"Deepgram STT returned {resp.status} {self._stt_fault_count} times in a row.\n"
+                            f"  Last error: {body[:200]}\n"
+                            "  Fix: check stt_api_key and audio encoding in bridge_config.toml."
+                        )
                 return None
             data = await resp.json()
             alts = (

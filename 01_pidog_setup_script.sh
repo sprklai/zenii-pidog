@@ -449,8 +449,8 @@ fi
 
 mkdir -p "${BRIDGE_DIR}"
 
-# Download bridge files from the same GitHub release tag's source tree
-BRIDGE_BASE="https://raw.githubusercontent.com/${PIDOG_REPO}/main/bridge"
+# Download bridge files pinned to the same release tag (not main) for reproducibility
+BRIDGE_BASE="https://raw.githubusercontent.com/${PIDOG_REPO}/${ZENII_VERSION}/bridge"
 BRIDGE_FILES="__init__.py __main__.py config.py zenii_client.py hardware.py voice.py action_parser.py bridge.py requirements.txt"
 
 mkdir -p "${BRIDGE_DIR}/bridge"
@@ -479,8 +479,7 @@ Requires=${SERVICE_NAME}.service
 Type=simple
 User=${CURRENT_USER}
 WorkingDirectory=${BRIDGE_DIR}
-Environment=PIDOG_SIMULATE=false
-Environment=PIDOG_VOICE_PROVIDER=text
+Environment=PIDOG_CONFIG=${BRIDGE_DIR}/bridge_config.toml
 ExecStartPre=/bin/sleep 3
 ExecStart=${BRIDGE_DIR}/.venv/bin/python3 -m bridge
 Restart=on-failure

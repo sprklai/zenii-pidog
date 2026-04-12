@@ -200,22 +200,31 @@ class SimulatedHardware(HardwareInterface):
 
 
 def create_hardware(config: BridgeConfig) -> HardwareInterface:
-    """Factory: return real or simulated hardware based on config."""
+    """Factory: return real or simulated hardware based on config.
+
+    If simulate_hardware=False (real hardware requested) and the pidog library
+    is missing or fails to initialise, startup is aborted with a clear error
+    rather than silently running in simulation.  Set simulate_hardware=true in
+    bridge_config.toml (or PIDOG_SIMULATE=true) to allow simulation fallback.
+    """
     if config.simulate_hardware:
         return SimulatedHardware()
     try:
-        return RealHardware()
-    except ImportError:
-        logger.warning(
-            "pidog library not found — falling back to simulation mode"
-        )
-        return SimulatedHardware()
+        hw = RealHardware()
+        logger.info("PiDog2 real hardware ready")
+        return hw
+    except ImportError as exc:
+        raise RuntimeError(
+            "pidog library not found — cannot start with simulate_hardware=false.\n"
+            "  Fix A: install the library:  pip install pidog\n"
+            "  Fix B: enable simulation:    PIDOG_SIMULATE=true  or  simulate_hardware = true"
+        ) from exc
     except Exception as exc:
-        logger.warning(
-            "Failed to initialize PiDog hardware (%s) — falling back to simulation",
-            exc,
-        )
-        return SimulatedHardware()
+        raise RuntimeError(
+            f"PiDog hardware init failed ({exc}) — cannot start with simulate_hardware=false.\n"
+            "  Fix A: check hardware connections and power.\n"
+            "  Fix B: enable simulation:    PIDOG_SIMULATE=true  or  simulate_hardware = true"
+        ) from exc
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
