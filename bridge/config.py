@@ -76,6 +76,11 @@ class BridgeConfig:
     silence_threshold: float = 0.3
     # Recording window in seconds. 5s is suitable for short voice commands.
     listen_timeout_secs: float = 5.0
+    # sounddevice device index or name for mic input / speaker output.
+    # -1 = system default. Use `python3 -c "import sounddevice; print(sounddevice.query_devices())"` to list.
+    # PiDog Robot HAT I2S mic is typically "seeed-2mic-voicecard" or device index 1 or 2.
+    mic_device: int = -1
+    speaker_device: int = -1
 
     # Pipecat cloud voice
     pipecat_stt_provider: str = "deepgram"
@@ -147,6 +152,8 @@ class BridgeConfig:
         cfg.listen_timeout_secs = _env_float(
             "PIDOG_LISTEN_TIMEOUT", cfg.listen_timeout_secs
         )
+        cfg.mic_device = _env_int("PIDOG_MIC_DEVICE", cfg.mic_device)
+        cfg.speaker_device = _env_int("PIDOG_SPEAKER_DEVICE", cfg.speaker_device)
 
         # Pipecat cloud voice settings
         cfg.pipecat_stt_provider = os.environ.get(
@@ -245,7 +252,7 @@ class BridgeConfig:
         simple_keys = [
             "zenii_url", "zenii_token", "session_title", "simulate_hardware",
             "voice_provider", "stt_model_path", "tts_model", "tts_binary",
-            "silence_threshold", "listen_timeout_secs",
+            "silence_threshold", "listen_timeout_secs", "mic_device", "speaker_device",
             "sensor_interval_secs", "memory_throttle_secs",
             "obstacle_alert_cm", "touch_cooldown_secs", "obstacle_cooldown_secs",
             "default_action_speed", "thread_pool_size",

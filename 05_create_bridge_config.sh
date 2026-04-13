@@ -408,6 +408,9 @@ esac
 
     echo ""
     echo "# Optional tuning (uncomment to override defaults)"
+    echo "# mic_device = -1                 # sounddevice input index; -1 = system default"
+    echo "#                                 # PiDog I2S mic: run 'arecord -l' to find device index"
+    echo "# speaker_device = -1             # sounddevice output index; -1 = system default"
     echo "# listen_timeout_secs = 5.0       # recording window per utterance (seconds)"
     echo "# silence_threshold = 0.3         # 0.0-1.0 fraction of int16 max; filters ambient noise"
     echo "# sensor_interval_secs = 2.0"

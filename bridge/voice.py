@@ -211,6 +211,7 @@ class CloudVoice(VoiceInterface):
             import numpy as np
             import sounddevice as sd  # type: ignore[import-untyped]
 
+            device = self._config.mic_device if self._config.mic_device >= 0 else None
             frames = int(
                 self._config.pipecat_sample_rate * self._config.listen_timeout_secs
             )
@@ -219,6 +220,7 @@ class CloudVoice(VoiceInterface):
                 samplerate=self._config.pipecat_sample_rate,
                 channels=1,
                 dtype="int16",
+                device=device,
                 blocking=True,
             )
             # Discard silent recordings to avoid wasting API quota.
@@ -231,6 +233,24 @@ class CloudVoice(VoiceInterface):
             return audio.tobytes()
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
+            # On device error, log available devices to help diagnose
+            try:
+                import sounddevice as sd  # type: ignore[import-untyped]
+                devs = sd.query_devices()
+                inputs = [
+                    f"  [{i}] {d['name']} (in={d['max_input_channels']}ch)"
+                    for i, d in enumerate(devs)
+                    if d["max_input_channels"] > 0
+                ]
+                if inputs:
+                    logger.warning(
+                        "Available input devices (set mic_device in bridge_config.toml):\n%s",
+                        "\n".join(inputs),
+                    )
+                else:
+                    logger.warning("No input devices found — check audio hardware")
+            except Exception:
+                pass
             return None
 
     @staticmethod
