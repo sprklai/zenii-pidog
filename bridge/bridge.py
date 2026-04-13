@@ -88,6 +88,9 @@ class PiDogZeniiBridge:
 
         await asyncio.wait_for(self._client.ws_connect(), timeout=10.0)
 
+        # Configure AI provider in Zenii if specified in bridge_config.toml
+        await self._configure_ai_provider()
+
         # Set idle mood
         self._enqueue_action(LEDS_IDLE)
 
@@ -122,6 +125,34 @@ class PiDogZeniiBridge:
             logger.info("Daemon not ready, retrying in %.1fs", delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
+
+    async def _configure_ai_provider(self) -> None:
+        """Push AI provider config from bridge_config.toml into the Zenii daemon.
+
+        Only runs if ai_provider is set.  Idempotent — safe to call on every startup.
+        """
+        if not self._config.ai_provider:
+            return
+        provider = self._config.ai_provider
+        model = self._config.ai_model
+        api_key = self._config.ai_api_key
+        try:
+            if api_key:
+                await asyncio.wait_for(
+                    self._client.set_credential(f"api_key:{provider}", api_key),
+                    timeout=5.0,
+                )
+                logger.info("AI provider key stored: api_key:%s", provider)
+            if model:
+                await asyncio.wait_for(
+                    self._client.set_default_provider(provider, model),
+                    timeout=5.0,
+                )
+                logger.info("AI provider set: %s / %s", provider, model)
+            elif provider:
+                logger.info("AI provider key set for %s (no model specified)", provider)
+        except Exception as exc:
+            logger.warning("Failed to configure AI provider: %s", exc)
 
     async def _shutdown_watcher(self) -> None:
         """Wait for shutdown signal, then cancel all tasks."""

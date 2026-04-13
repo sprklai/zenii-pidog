@@ -52,6 +52,12 @@ class BridgeConfig:
     zenii_url: str = "http://127.0.0.1:18981"
     zenii_token: str | None = None
 
+    # AI provider — configured in Zenii at startup if set
+    # provider_id must match a Zenii provider (e.g. "anthropic", "openai", "ollama")
+    ai_provider: str = ""
+    ai_model: str = ""
+    ai_api_key: str = ""
+
     # Session
     session_title: str = "pidog-session"
 
@@ -120,6 +126,9 @@ class BridgeConfig:
         # Env vars override everything
         cfg.zenii_url = os.environ.get("ZENII_URL", cfg.zenii_url)
         cfg.zenii_token = os.environ.get("ZENII_TOKEN", cfg.zenii_token)
+        cfg.ai_provider = os.environ.get("ZENII_AI_PROVIDER", cfg.ai_provider)
+        cfg.ai_model = os.environ.get("ZENII_AI_MODEL", cfg.ai_model)
+        cfg.ai_api_key = os.environ.get("ZENII_AI_API_KEY", cfg.ai_api_key)
         cfg.session_title = os.environ.get("PIDOG_SESSION_TITLE", cfg.session_title)
         cfg.simulate_hardware = _env_bool("PIDOG_SIMULATE", cfg.simulate_hardware)
 
@@ -219,6 +228,19 @@ class BridgeConfig:
           [voice.pipecat]
           stt_provider = "deepgram"
         """
+        # [zenii] section — AI provider config applied to Zenii daemon at startup
+        zenii_sec = data.get("zenii", {})
+        zenii_map = {
+            "url":      "zenii_url",
+            "token":    "zenii_token",
+            "ai_provider": "ai_provider",
+            "ai_model":    "ai_model",
+            "ai_api_key":  "ai_api_key",
+        }
+        for toml_key, attr in zenii_map.items():
+            if toml_key in zenii_sec:
+                setattr(self, attr, zenii_sec[toml_key])
+
         # Flat keys at top level
         simple_keys = [
             "zenii_url", "zenii_token", "session_title", "simulate_hardware",
