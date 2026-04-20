@@ -202,19 +202,24 @@ class PiDogZeniiBridge:
             logger.warning("Failed to configure AI provider: %s", exc)
 
     async def _push_soul(self) -> None:
-        """Upload the PiDog personality/identity to Zenii so the AI emits action tags."""
+        """Establish PiDog personality by sending the soul as the first WS message.
+
+        The /identity endpoint is not available in all Zenii versions, so we seed
+        the session context directly via the chat WebSocket instead.
+        """
+        init_prompt = (
+            f"{PIDOG_SOUL}\n\n"
+            "Confirm you understand your role and will always embed <pidog_action> tags "
+            "when the user asks you to do something physical. Reply only with: Understood."
+        )
         try:
-            await asyncio.wait_for(
-                self._client.update_identity("pidog", PIDOG_SOUL),
-                timeout=10.0,
+            reply = await asyncio.wait_for(
+                self._ws_chat(init_prompt),
+                timeout=20.0,
             )
-            await asyncio.wait_for(
-                self._client.reload_identity(),
-                timeout=10.0,
-            )
-            logger.info("PiDog soul/identity pushed to Zenii")
+            logger.info("PiDog soul established — AI: %s", (reply or "").strip()[:80])
         except Exception as exc:
-            logger.warning("Failed to push soul — AI won't emit action tags: %s", exc)
+            logger.warning("Failed to establish soul: %s", exc)
 
     async def _llm_smoke_test(self) -> None:
         """Send a single test message to confirm the LLM is reachable and responding."""
