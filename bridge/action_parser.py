@@ -116,24 +116,51 @@ class ParsedResponse:
 
 # Common LLM-invented aliases → canonical VALID_ACTIONS names
 _ACTION_ALIASES: dict[str, str] = {
-    "stand_up":      "stand",
-    "get_up":        "stand",
-    "sit_down":      "sit",
-    "lay_down":      "lie_down",
-    "wag":           "wag_tail",
-    "tail_wag":      "wag_tail",
-    "shake_tail":    "wag_tail",
-    "head_shake":    "shake_head",
-    "bow":           "stretch",
-    "jump":          "push_up",
-    "handshake":     "shake_hand",
-    "high_5":        "high_five",
-    "tilt_left":     "tilting_head_left",
-    "tilt_right":    "tilting_head_right",
-    "twist":         "body_twisting",
-    "howl":          "howling",
-    "panting":       "pant",
-    "bark_loud":     "bark_harder",
+    # stand
+    "stand_up": "stand", "get_up": "stand", "rise": "stand", "standing": "stand",
+    # sit
+    "sit_down": "sit", "stay": "sit", "sitting": "sit",
+    # lie_down
+    "lay_down": "lie_down", "lie": "lie_down", "sleep": "lie_down", "lying": "lie_down",
+    # stretch / push_up
+    "bow": "stretch", "stretching": "stretch",
+    "push_up": "push_up", "pushup": "push_up", "jump": "push_up",
+    # movement
+    "walk": "forward", "go_forward": "forward", "move_forward": "forward",
+    "go_back": "backward", "back_up": "backward", "retreat": "backward",
+    "go_left": "turn_left", "turn_l": "turn_left",
+    "go_right": "turn_right", "turn_r": "turn_right",
+    # wag_tail
+    "wag": "wag_tail", "tail_wag": "wag_tail", "shake_tail": "wag_tail",
+    "wagging": "wag_tail", "wag_my_tail": "wag_tail",
+    # shake_head
+    "head_shake": "shake_head", "no": "shake_head",
+    # shake_hand
+    "handshake": "shake_hand", "paw": "shake_hand", "give_paw": "shake_hand",
+    "shake_hands": "shake_hand", "give_me_your_paw": "shake_hand",
+    # high_five
+    "high_5": "high_five", "hi5": "high_five",
+    # lick_hand
+    "kiss": "lick_hand", "lick": "lick_hand",
+    # head motion
+    "tilt_left": "tilting_head_left", "look_left": "tilting_head_left",
+    "tilt_right": "tilting_head_right", "look_right": "tilting_head_right",
+    "look_up": "head_up", "head_raise": "head_up",
+    "look_down": "head_down", "head_lower": "head_down",
+    # body_twisting
+    "twist": "body_twisting", "spin": "body_twisting",
+    "twirl": "body_twisting", "dance": "body_twisting", "rotate": "body_twisting",
+    # bark
+    "woof": "bark", "speak": "bark", "barking": "bark",
+    "bark_hard": "bark_harder", "bark_loud": "bark_harder", "loud_bark": "bark_harder",
+    # howling
+    "howl": "howling", "sing": "howling",
+    # pant
+    "panting": "pant", "breathe": "pant",
+    # expressive
+    "thinking": "think", "surprised": "surprise", "flustered": "fluster",
+    "scratching": "scratch", "recalling": "recall",
+    "relax": "relax_neck",
 }
 
 
