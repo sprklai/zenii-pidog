@@ -265,18 +265,26 @@ class PiDogZeniiBridge:
                         response_text, self._config.default_action_speed
                     )
 
+                    # Log raw AI output so we can see what was received
+                    logger.info("AI raw: %s", response_text[:300])
+
                     # Enqueue all actions immediately (non-blocking)
                     for action in parsed.actions:
+                        logger.info("Queuing action: %s (speed=%d)", action.action, action.speed)
                         self._enqueue_action(action)
                     for led_cmd in parsed.led_commands:
+                        logger.info("Queuing LED: mode=%s color=%s", led_cmd.mode, led_cmd.color)
                         self._enqueue_action(led_cmd)
 
                     # Speak the clean text (concurrent with action execution)
                     if parsed.clean_text:
+                        logger.info("Speaking: %s", parsed.clean_text)
                         await self._voice.speak(parsed.clean_text)
                         # Brief pause so the speaker finishes reverberating before
                         # the mic starts recording again — prevents TTS echo pickup
                         await asyncio.sleep(0.5)
+                    else:
+                        logger.warning("No clean text to speak (response was: %s)", response_text[:200])
 
                 # Return to idle LEDs
                 self._enqueue_action(LEDS_IDLE)
@@ -487,13 +495,13 @@ class PiDogZeniiBridge:
 
             try:
                 if isinstance(item, PiDogAction):
-                    logger.debug("Action: %s (speed=%d)", item.action, item.speed)
+                    logger.info("Executing action: %s (speed=%d)", item.action, item.speed)
                     await asyncio.wait_for(
                         self._hardware.execute_action(item),
                         timeout=self._config.action_timeout_secs,
                     )
                 elif isinstance(item, LEDCommand):
-                    logger.debug("LEDs: %s %s", item.mode, item.color)
+                    logger.info("Executing LED: mode=%s color=%s brightness=%d", item.mode, item.color, item.brightness)
                     await asyncio.wait_for(
                         self._hardware.set_leds(item),
                         timeout=self._config.action_timeout_secs,
