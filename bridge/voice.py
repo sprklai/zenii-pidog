@@ -2,15 +2,23 @@
 
 Provider selection via PIDOG_VOICE_PROVIDER env var:
   "local"   - Vosk STT + piper-tts (offline, RPi-optimized)
-  "pipecat" - Cloud STT/TTS via direct provider REST APIs (no extra packages)
+  "pipecat" - Cloud STT via Deepgram WebSocket streaming + TTS via Cartesia/etc REST
   "text"    - stdin/stdout fallback (development, SSH)
+
+Deepgram STT uses the WebSocket streaming API (not prerecorded REST) because:
+  - Streams 20ms audio chunks continuously — no fixed recording window
+  - Built-in VAD: knows exactly when you stop speaking (speech_final=true)
+  - ~300ms latency vs 3-5 second fixed-window batch approach
+  - Matches how Pipecat framework integrates Deepgram in production
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import json as _json
 import logging
+import queue as _queue
 import re
 import shutil
 from abc import ABC, abstractmethod
@@ -198,34 +206,209 @@ class CloudVoice(VoiceInterface):
 
     def _get_http(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
-            self._http = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=30)
-            )
+            # No total timeout — WebSocket streaming connections can be long-lived
+            self._http = aiohttp.ClientSession()
         return self._http
 
-    # -- Recording --
+    # -- STT --
+
+    async def listen(self) -> str | None:
+        """Listen for speech and return transcript. None = no speech detected."""
+        provider = self._config.pipecat_stt_provider.lower()
+        try:
+            if provider == "deepgram":
+                result = await self._stt_deepgram_streaming()
+            elif provider == "azure":
+                result = await self._stt_azure_batch()
+            elif provider == "google":
+                result = await self._stt_google_batch()
+            else:
+                logger.warning("Unknown STT provider: %s", provider)
+                return None
+            self._stt_fault_count = 0
+            return result
+        except _SttConfigError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except asyncio.TimeoutError:
+            logger.warning("STT timed out")
+            return None
+        except Exception as exc:
+            logger.warning("STT failed: %s", exc)
+            return None
+
+    async def _stt_deepgram_streaming(self) -> str | None:
+        """Stream microphone audio to Deepgram via WebSocket.
+
+        Uses Deepgram's live streaming API (same approach as Pipecat):
+        - Sends 20ms audio chunks over persistent WebSocket
+        - Deepgram's VAD detects end of utterance (speech_final=true)
+        - Returns transcript when user finishes speaking
+        - No fixed recording window — responds immediately when speech ends
+        """
+        try:
+            import sounddevice as sd  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("sounddevice not installed — cannot capture audio")
+            return None
+
+        sample_rate = self._config.pipecat_sample_rate
+        device = self._config.mic_device if self._config.mic_device >= 0 else None
+        chunk_ms = 20
+        chunk_frames = int(sample_rate * chunk_ms / 1000)  # 320 frames @ 16kHz
+
+        # Thread-safe queue: sounddevice callback (C thread) → asyncio coroutine
+        audio_q: _queue.SimpleQueue[bytes | None] = _queue.SimpleQueue()
+
+        def _on_audio(indata, frames, time_info, status) -> None:  # type: ignore[no-untyped-def]
+            if status:
+                logger.debug("Audio callback: %s", status)
+            audio_q.put(indata.tobytes())
+
+        qs = "&".join([
+            f"model={self._config.pipecat_stt_model or 'nova-2'}",
+            "language=en",
+            "encoding=linear16",
+            f"sample_rate={sample_rate}",
+            "channels=1",
+            "endpointing=400",       # ms silence before utterance end
+            "utterance_end_ms=1000", # ms after last word to send UtteranceEnd
+            "vad_events=true",       # get SpeechStarted events
+            "smart_format=true",
+            "interim_results=true",
+        ])
+        ws_url = f"wss://api.deepgram.com/v1/listen?{qs}"
+        headers = {"Authorization": f"Token {self._config.pipecat_stt_api_key}"}
+
+        transcript = ""
+
+        try:
+            async with self._get_http().ws_connect(
+                ws_url, headers=headers, heartbeat=20, receive_timeout=60.0
+            ) as ws:
+                logger.info("MIC streaming to Deepgram (device=%s), speak now...",
+                            device if device is not None else "default")
+
+                with sd.InputStream(
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=chunk_frames,
+                    callback=_on_audio,
+                    device=device,
+                ):
+                    async def _send_audio() -> None:
+                        loop = asyncio.get_running_loop()
+                        while True:
+                            # Run blocking queue.get in thread pool to avoid busy-loop
+                            chunk = await loop.run_in_executor(
+                                self._executor, audio_q.get
+                            )
+                            if chunk is None:
+                                break
+                            try:
+                                await ws.send_bytes(chunk)
+                            except Exception:
+                                break
+
+                    async def _recv_transcript() -> str:
+                        nonlocal transcript
+                        async for msg in ws:
+                            if msg.type != aiohttp.WSMsgType.TEXT:
+                                break
+                            data = _json.loads(msg.data)
+                            t = data.get("type", "")
+
+                            if t == "SpeechStarted":
+                                logger.info("MIC speech started")
+
+                            elif t == "Results":
+                                alts = (data.get("channel", {})
+                                        .get("alternatives", [{}]))
+                                text = alts[0].get("transcript", "").strip() if alts else ""
+                                is_final = data.get("is_final", False)
+                                speech_final = data.get("speech_final", False)
+
+                                if text:
+                                    logger.info(
+                                        "STT %s: %s",
+                                        "FINAL" if is_final else "interim",
+                                        text,
+                                    )
+                                if speech_final and text:
+                                    transcript = text
+                                    return transcript
+
+                            elif t == "UtteranceEnd":
+                                if transcript:
+                                    return transcript
+
+                            elif t == "Error":
+                                msg_text = data.get("message", "")
+                                logger.error("Deepgram error: %s", msg_text)
+                                if data.get("variant") in ("TOKEN_LIMIT_REACHED", "INVALID_AUTH"):
+                                    self._stt_fault_count += 1
+                                    if self._stt_fault_count >= self._STT_FAULT_LIMIT:
+                                        raise _SttConfigError(
+                                            f"Deepgram auth/quota error: {msg_text}"
+                                        )
+                                break
+                        return transcript
+
+                    send_task = asyncio.create_task(_send_audio())
+                    try:
+                        await asyncio.wait_for(
+                            _recv_transcript(),
+                            timeout=self._config.listen_timeout_secs,
+                        )
+                    except asyncio.TimeoutError:
+                        pass  # no speech in timeout window — normal, return None
+                    finally:
+                        audio_q.put(None)   # stop _send_audio
+                        send_task.cancel()
+                        try:
+                            await send_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        try:
+                            await ws.send_str('{"type":"CloseStream"}')
+                        except Exception:
+                            pass
+
+        except _SttConfigError:
+            raise
+        except Exception as exc:
+            logger.warning("Deepgram streaming failed: %s", exc)
+            return None
+
+        return transcript if transcript else None
+
+    @staticmethod
+    def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int) -> bytes:
+        """Wrap raw int16 mono PCM in a minimal WAV container (used by Azure/Google)."""
+        import struct
+        bits_per_sample = 16
+        num_channels = 1
+        byte_rate = sample_rate * num_channels * bits_per_sample // 8
+        block_align = num_channels * bits_per_sample // 8
+        data_size = len(pcm_bytes)
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF", 36 + data_size, b"WAVE", b"fmt ",
+            16, 1, num_channels, sample_rate,
+            byte_rate, block_align, bits_per_sample,
+            b"data", data_size,
+        )
+        return header + pcm_bytes
 
     def _record_audio_sync(self) -> bytes | None:
-        """Record raw PCM (int16, mono) from microphone (blocking, runs in thread pool)."""
+        """Batch-record fixed-duration PCM (used by Azure/Google batch STT)."""
         try:
             import numpy as np
             import sounddevice as sd  # type: ignore[import-untyped]
-
             device = self._config.mic_device if self._config.mic_device >= 0 else None
-            frames = int(
-                self._config.pipecat_sample_rate * self._config.listen_timeout_secs
-            )
-            audio = sd.rec(
-                frames,
-                samplerate=self._config.pipecat_sample_rate,
-                channels=1,
-                dtype="int16",
-                device=device,
-                blocking=True,
-            )
-            # Discard silent recordings to avoid wasting API quota.
-            # silence_threshold is a 0.0-1.0 fraction of int16 max (32767).
-            # Default 0.3 → RMS threshold ~9830, filtering out ambient noise.
+            frames = int(self._config.pipecat_sample_rate * self._config.listen_timeout_secs)
+            audio = sd.rec(frames, samplerate=self._config.pipecat_sample_rate,
+                           channels=1, dtype="int16", device=device, blocking=True)
             rms = int(np.sqrt(np.mean(audio.astype("float32") ** 2)))
             threshold = int(self._config.silence_threshold * 32767)
             if rms < threshold:
@@ -233,158 +416,35 @@ class CloudVoice(VoiceInterface):
             return audio.tobytes()
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
-            # On device error, log available devices to help diagnose
-            try:
-                import sounddevice as sd  # type: ignore[import-untyped]
-                devs = sd.query_devices()
-                inputs = [
-                    f"  [{i}] {d['name']} (in={d['max_input_channels']}ch)"
-                    for i, d in enumerate(devs)
-                    if d["max_input_channels"] > 0
-                ]
-                if inputs:
-                    logger.warning(
-                        "Available input devices (set mic_device in bridge_config.toml):\n%s",
-                        "\n".join(inputs),
-                    )
-                else:
-                    logger.warning("No input devices found — check audio hardware")
-            except Exception:
-                pass
             return None
 
-    @staticmethod
-    def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int) -> bytes:
-        """Wrap raw int16 mono PCM in a minimal WAV container."""
-        import struct
-        num_samples = len(pcm_bytes) // 2
-        num_channels = 1
-        bits_per_sample = 16
-        byte_rate = sample_rate * num_channels * bits_per_sample // 8
-        block_align = num_channels * bits_per_sample // 8
-        data_size = len(pcm_bytes)
-        header = struct.pack(
-            "<4sI4s4sIHHIIHH4sI",
-            b"RIFF",
-            36 + data_size,
-            b"WAVE",
-            b"fmt ",
-            16,          # PCM chunk size
-            1,           # PCM format
-            num_channels,
-            sample_rate,
-            byte_rate,
-            block_align,
-            bits_per_sample,
-            b"data",
-            data_size,
-        )
-        return header + pcm_bytes
-
-    # -- STT --
-
-    async def listen(self) -> str | None:
+    async def _stt_azure_batch(self) -> str | None:
+        """Batch POST to Azure Speech-to-Text (fallback for Azure provider)."""
         loop = asyncio.get_running_loop()
-        audio_bytes = await loop.run_in_executor(
-            self._executor, self._record_audio_sync
-        )
+        audio_bytes = await loop.run_in_executor(self._executor, self._record_audio_sync)
         if not audio_bytes:
             return None
-
-        provider = self._config.pipecat_stt_provider.lower()
-        try:
-            if provider == "deepgram":
-                result = await self._stt_deepgram(audio_bytes)
-            elif provider == "azure":
-                result = await self._stt_azure(audio_bytes)
-            elif provider == "google":
-                result = await self._stt_google(audio_bytes)
-            else:
-                logger.warning("Unknown STT provider: %s", provider)
-                return None
-            # Successful call — reset fault counter
-            self._stt_fault_count = 0
-            return result
-        except _SttConfigError as exc:
-            # 4xx circuit breaker tripped — propagate as fatal
-            raise RuntimeError(str(exc)) from exc
-        except asyncio.TimeoutError:
-            logger.warning("Cloud STT timed out")
-            return None
-        except Exception as exc:
-            logger.warning("Cloud STT failed: %s", exc)
-            return None
-
-    async def _stt_deepgram(self, audio_bytes: bytes) -> str | None:
-        """POST raw audio to Deepgram prerecorded API."""
-        params = {
-            "model": self._config.pipecat_stt_model or "nova-2",
-            "smart_format": "true",
-            # Tell Deepgram the exact encoding so no WAV header is needed
-            "encoding": "linear16",
-            "sample_rate": str(self._config.pipecat_sample_rate),
-            "channels": "1",
-        }
-        headers = {
-            "Authorization": f"Token {self._config.pipecat_stt_api_key}",
-            "Content-Type": "audio/raw",
-        }
-        async with self._get_http().post(
-            "https://api.deepgram.com/v1/listen",
-            params=params,
-            headers=headers,
-            data=audio_bytes,
-        ) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                logger.warning(
-                    "Deepgram STT error %d: %s",
-                    resp.status,
-                    body[:300],
-                )
-                if 400 <= resp.status < 500:
-                    self._stt_fault_count += 1
-                    if self._stt_fault_count >= self._STT_FAULT_LIMIT:
-                        raise _SttConfigError(
-                            f"Deepgram STT returned {resp.status} {self._stt_fault_count} times in a row.\n"
-                            f"  Last error: {body[:200]}\n"
-                            "  Fix: check stt_api_key and audio encoding in bridge_config.toml."
-                        )
-                return None
-            data = await resp.json()
-            alts = (
-                data.get("results", {})
-                .get("channels", [{}])[0]
-                .get("alternatives", [{}])
-            )
-            text = alts[0].get("transcript", "").strip() if alts else ""
-            return text or None
-
-    async def _stt_azure(self, audio_bytes: bytes) -> str | None:
-        """POST WAV audio to Azure Cognitive Services Speech-to-Text.
-
-        pipecat_stt_model is used as the Azure region (e.g. 'eastus').
-        """
         region = self._config.pipecat_stt_model or "eastus"
-        url = (
-            f"https://{region}.stt.speech.microsoft.com"
-            "/speech/recognition/conversation/cognitiveservices/v1"
-            "?language=en-US"
-        )
+        url = (f"https://{region}.stt.speech.microsoft.com"
+               "/speech/recognition/conversation/cognitiveservices/v1?language=en-US")
         headers = {
             "Ocp-Apim-Subscription-Key": self._config.pipecat_stt_api_key,
             "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=16000",
         }
-        wav_bytes = self._pcm_to_wav(audio_bytes, self._config.pipecat_sample_rate)
-        async with self._get_http().post(url, headers=headers, data=wav_bytes) as resp:
+        wav = self._pcm_to_wav(audio_bytes, self._config.pipecat_sample_rate)
+        async with self._get_http().post(url, headers=headers, data=wav) as resp:
             resp.raise_for_status()
             data = await resp.json()
             if data.get("RecognitionStatus") == "Success":
                 return data.get("DisplayText", "").strip() or None
             return None
 
-    async def _stt_google(self, audio_bytes: bytes) -> str | None:
-        """POST base64-encoded audio to Google Cloud Speech-to-Text REST API."""
+    async def _stt_google_batch(self) -> str | None:
+        """Batch POST to Google Cloud Speech-to-Text (fallback for Google provider)."""
+        loop = asyncio.get_running_loop()
+        audio_bytes = await loop.run_in_executor(self._executor, self._record_audio_sync)
+        if not audio_bytes:
+            return None
         body = {
             "config": {
                 "encoding": "LINEAR16",
