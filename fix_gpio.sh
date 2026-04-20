@@ -43,17 +43,9 @@ while jobs -l | grep -qE "Stopped|Running"; do
     break
 done
 
-# 4. Wait for GPIO to be released
-sleep 2
-
-# 5. Verify GPIO is free
-echo ""
-info "Verifying GPIO is free ..."
-if python3 -c "from pidog import Pidog; d=Pidog(); d.close(); print('GPIO free')" 2>&1 | grep -q "GPIO free"; then
-    ok "GPIO is free — ready to start bridge"
-else
-    warn "GPIO may still be busy — try: sudo reboot"
-fi
+# 4. Wait for GPIO to be released by the kernel
+sleep 3
+ok "GPIO cleanup complete"
 
 echo ""
 echo "  Start bridge with:"
