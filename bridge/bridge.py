@@ -386,11 +386,17 @@ class PiDogZeniiBridge:
                 await asyncio.sleep(1)
 
     def _build_prompt(self, user_text: str) -> str:
-        """Prepend sensor context to user speech."""
+        """Prepend sensor context and action-tag reminder to user speech."""
+        reminder = (
+            '[Rule: for any physical action embed <pidog_action>{"action":"NAME","speed":80}'
+            "</pidog_action> in your reply]"
+        )
+        parts = []
         if self._last_sensor:
-            sensor_ctx = self._last_sensor.to_context_string()
-            return f"{sensor_ctx}\nUser said: {user_text}"
-        return f"User said: {user_text}"
+            parts.append(self._last_sensor.to_context_string())
+        parts.append(f"User said: {user_text}")
+        parts.append(reminder)
+        return "\n".join(parts)
 
     async def _ws_chat(self, prompt: str) -> str | None:
         """Send prompt over WS, collect text messages until done.
