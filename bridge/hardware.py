@@ -86,13 +86,36 @@ class RealHardware(HardwareInterface):
 
     def __init__(self) -> None:
         import gc
+        import sys
+        import time as _time
 
         from pidog import Pidog  # type: ignore[import-untyped]
 
+        # Suppress the benign gpiozero __del__ "GPIO busy" traceback that fires
+        # when old InputDevice objects (from Pidog.__init__ internals) are GC'd
+        # after pidog has already re-claimed the pins.  This is not a real error —
+        # lgpio's close() tries to claim-input before releasing, which fails when
+        # another owner already holds the pin.  We install a targeted hook here so
+        # it is only active while RealHardware is alive.
+        _orig_hook = sys.unraisablehook
+
+        def _gpio_gc_hook(ur: sys.UnraisableHookArgs) -> None:
+            if (
+                isinstance(ur.exc_value, Exception)
+                and "GPIO busy" in str(ur.exc_value)
+                and ur.object is not None
+                and "__del__" in str(ur.object)
+            ):
+                return  # benign gpiozero cleanup race — drop silently
+            _orig_hook(ur)
+
+        sys.unraisablehook = _gpio_gc_hook
+        self._orig_unraisable_hook = _orig_hook  # restored in close()
+
         self._dog = Pidog()
-        # Force GC so intermediate gpiozero objects created during Pidog.__init__
-        # are finalized NOW (in this thread) rather than later in the asyncio loop,
-        # which would print "Exception ignored in GPIOBase.__del__: GPIO busy".
+        # Brief pause (from official examples: sleep(0.1) after Pidog()) lets
+        # servo and sensor threads fully settle before any commands are sent.
+        _time.sleep(0.2)
         gc.collect()
         self._rgb = self._dog.rgb_strip
         self._action_lock = asyncio.Lock()
@@ -130,11 +153,15 @@ class RealHardware(HardwareInterface):
     async def read_sensors(self) -> SensorReading:
         return await asyncio.to_thread(self._read_sensors_sync)
 
+    def _execute_action_sync(self, action: PiDogAction) -> None:
+        # do_action() queues internally and returns immediately; wait_all_done()
+        # blocks until all body parts finish — prevents actions from overlapping.
+        self._dog.do_action(action.action, speed=action.speed)
+        self._dog.wait_all_done()
+
     async def execute_action(self, action: PiDogAction) -> None:
         async with self._action_lock:
-            await asyncio.to_thread(
-                self._dog.do_action, action.action, speed=action.speed
-            )
+            await asyncio.to_thread(self._execute_action_sync, action)
 
     # Maps user-facing LED mode names to pidog RGBStrip style names.
     # Full pidog style list: monochromatic, breath, boom, bark, speak, listen
@@ -166,6 +193,8 @@ class RealHardware(HardwareInterface):
             await asyncio.to_thread(self._dog.close)
         except Exception:
             pass
+        import sys
+        sys.unraisablehook = self._orig_unraisable_hook
         logger.info("PiDog2 hardware closed")
 
 

@@ -10,47 +10,67 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 # Canonical action names understood by the AI/SOUL.md persona.
-# Entries that differ from pidog's ActionDict are remapped in ACTION_MAP below.
+# Source of truth: official SunFounder voice-assistant example (20_voice_active_dog_gpt.py)
+# Entries that differ from pidog's do_action() keys are remapped in ACTION_MAP below.
 VALID_ACTIONS: set[str] = {
+    # Movement
     "forward",
     "backward",
     "turn_left",
     "turn_right",
+    # Posture
     "sit",
     "stand",
     "lie_down",
+    "stretch",
+    "push_up",
+    # Vocals
     "bark",
     "bark_harder",
     "howling",
     "pant",
+    # Expressive
     "wag_tail",
+    "shake_head",
+    "nod",
+    "think",
+    "recall",
+    "surprise",
+    "fluster",
+    # Interaction
     "shake_hand",
     "high_five",
-    "push_up",
-    "stretch",
-    "body_twisting",
+    "lick_hand",
+    "scratch",
+    # Head motion
     "tilting_head_left",
     "tilting_head_right",
     "head_up",
     "head_down",
-    "nod",
-    "shake_head",
-    "think",
-    "surprise",
+    "relax_neck",
+    # Legacy/compound
+    "body_twisting",
 }
 
 # Maps AI-facing action names → pidog do_action() keys where they differ.
 # pidog accepts both ActionDict keys (underscores) and OPERATIONS keys (spaces).
-# Actions not in this map pass through unchanged (e.g. howling, pant, nod, think, surprise
-# are all valid OPERATIONS names).
+# Actions not listed here pass through unchanged — they are valid OPERATIONS names
+# as-is (bark, howling, pant, nod, think, recall, surprise, fluster, scratch).
 ACTION_MAP: dict[str, str] = {
+    # Posture
     "lie_down":      "lie",
-    "bark_harder":   "bark harder",   # OPERATIONS key
-    "shake_hand":    "handshake",     # OPERATIONS key (shake_hand is not a valid pidog name)
-    "high_five":     "high five",     # OPERATIONS key (space, not underscore)
-    "body_twisting": "twist body",    # OPERATIONS key
-    "head_up":       "head_up_down",  # ActionDict
-    "head_down":     "head_up_down",  # ActionDict
+    # Vocals
+    "bark_harder":   "bark harder",    # OPERATIONS key uses space
+    # Interaction
+    "shake_hand":    "handshake",      # OPERATIONS key (no underscore)
+    "high_five":     "high five",      # OPERATIONS key uses space
+    "lick_hand":     "lick hand",      # OPERATIONS key uses space
+    # Expressive
+    "relax_neck":    "relax neck",     # OPERATIONS key uses space
+    "body_twisting": "twist body",     # OPERATIONS key uses space
+    # Head motion
+    "head_up":       "head_up_down",   # ActionDict
+    "head_down":     "head_up_down",   # ActionDict
 }
 
 VALID_LED_MODES: set[str] = {"solid", "blink", "breath", "trail", "listen", "bark"}

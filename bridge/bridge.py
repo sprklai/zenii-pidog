@@ -471,28 +471,18 @@ class PiDogZeniiBridge:
         Each action has a timeout to prevent servo hangs from blocking the queue.
         Exceptions are logged and swallowed — the queue must keep draining.
 
-        Note: queue.get() is wrapped in ensure_future so it becomes a Task with a
-        proper lifecycle.  Passing a raw coroutine to wait_for in Python 3.13 leaves
-        an undone coroutine on cancellation whose __del__ tries to call
-        loop.call_soon() after the loop is closed → RuntimeError noise on shutdown.
+        asyncio.timeout() (Python 3.11+) is used instead of wait_for() because it
+        operates on a deadline handle rather than wrapping the coroutine in a Task.
+        This avoids the Python 3.13 issue where wait_for() leaves a dangling Task
+        whose shield callback fires after the event loop closes.
         """
         while not self._shutdown_event.is_set():
-            get_task = asyncio.ensure_future(self._action_queue.get())
             try:
-                item = await asyncio.wait_for(asyncio.shield(get_task), timeout=1.0)
-            except asyncio.TimeoutError:
-                get_task.cancel()
-                try:
-                    await get_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                async with asyncio.timeout(1.0):
+                    item = await self._action_queue.get()
+            except TimeoutError:
                 continue
             except asyncio.CancelledError:
-                get_task.cancel()
-                try:
-                    await get_task
-                except (asyncio.CancelledError, Exception):
-                    pass
                 raise
 
             try:
