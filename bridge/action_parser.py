@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# Canonical action names understood by the AI/SOUL.md persona.
+# Entries that differ from pidog's ActionDict are remapped in ACTION_MAP below.
 VALID_ACTIONS: set[str] = {
     "forward",
     "backward",
@@ -35,6 +37,23 @@ VALID_ACTIONS: set[str] = {
     "shake_head",
     "think",
     "surprise",
+}
+
+# Maps AI-facing action names → pidog ActionDict keys where they differ.
+# Actions not in this map are passed through unchanged.
+ACTION_MAP: dict[str, str] = {
+    "lie_down":      "lie",
+    "bark_harder":   "bark",
+    "howling":       "wag_tail",      # closest expressive substitute
+    "pant":          "wag_tail",
+    "shake_hand":    "shake_hand",
+    "high_five":     "high_five",
+    "body_twisting": "stretch",
+    "head_up":       "head_up_down",
+    "head_down":     "head_up_down",
+    "nod":           "nod_lethargy",
+    "think":         "tilting_head",
+    "surprise":      "head_up_down",
 }
 
 VALID_LED_MODES: set[str] = {"solid", "blink", "breath", "trail"}
@@ -105,7 +124,8 @@ def parse_response(text: str, default_speed: int = 80) -> ParsedResponse:
         speed = data.get("speed", default_speed)
         if not isinstance(speed, (int, float)):
             speed = default_speed
-        actions.append(PiDogAction(action=action_name, speed=int(speed)))
+        pidog_action = ACTION_MAP.get(action_name, action_name)
+        actions.append(PiDogAction(action=pidog_action, speed=int(speed)))
 
     # Extract LED commands
     for match in _LEDS_RE.finditer(text):

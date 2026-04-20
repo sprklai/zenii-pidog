@@ -143,9 +143,10 @@ class RealHardware(HardwareInterface):
         style = self._LED_MODE_MAP.get(cmd.mode, "monochromatic")
         brightness = max(0.0, min(1.0, cmd.brightness / 100.0))
         bps = 1.0
-        await asyncio.to_thread(
-            self._rgb.set_mode, style, (r, g, b), bps, brightness
-        )
+        async with self._action_lock:
+            await asyncio.to_thread(
+                self._rgb.set_mode, style, (r, g, b), bps, brightness
+            )
 
     async def close(self) -> None:
         try:

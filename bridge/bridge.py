@@ -263,6 +263,9 @@ class PiDogZeniiBridge:
                     # Speak the clean text (concurrent with action execution)
                     if parsed.clean_text:
                         await self._voice.speak(parsed.clean_text)
+                        # Brief pause so the speaker finishes reverberating before
+                        # the mic starts recording again — prevents TTS echo pickup
+                        await asyncio.sleep(0.5)
 
                 # Return to idle LEDs
                 self._enqueue_action(LEDS_IDLE)
