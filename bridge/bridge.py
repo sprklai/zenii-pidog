@@ -228,13 +228,15 @@ class PiDogZeniiBridge:
         except Exception as exc:
             logger.warning("Startup TTS failed: %s", exc)
 
+        # Enter listening state once; stay there until speech is detected.
+        # Only switch away when processing or speaking — no rapid cycling.
+        self._enqueue_action(LEDS_LISTENING)
+
         while not self._shutdown_event.is_set():
             try:
-                # Show listening LEDs before recording, then wait for speech
-                self._enqueue_action(LEDS_LISTENING)
                 text = await self._voice.listen()
                 if text is None:
-                    self._enqueue_action(LEDS_IDLE)
+                    # No speech detected this pass — stay in listening state
                     await asyncio.sleep(0.05)
                     continue
 
@@ -243,7 +245,7 @@ class PiDogZeniiBridge:
                 # Build prompt with sensor context
                 prompt = self._build_prompt(text)
 
-                # Set thinking LEDs immediately
+                # Switch to thinking LEDs while AI processes
                 self._enqueue_action(LEDS_THINKING)
 
                 # Send via WebSocket and collect response (with timeout)
@@ -256,7 +258,7 @@ class PiDogZeniiBridge:
                     logger.warning("WS chat timed out after %.0fs", self._config.ws_chat_timeout_secs)
                     self._enqueue_action(LEDS_ALERT)
                     await asyncio.sleep(1)
-                    self._enqueue_action(LEDS_IDLE)
+                    self._enqueue_action(LEDS_LISTENING)
                     continue
 
                 if response_text:
@@ -286,8 +288,8 @@ class PiDogZeniiBridge:
                     else:
                         logger.warning("No clean text to speak (response was: %s)", response_text[:200])
 
-                # Return to idle LEDs
-                self._enqueue_action(LEDS_IDLE)
+                # Done speaking — back to listening
+                self._enqueue_action(LEDS_LISTENING)
 
             except asyncio.CancelledError:
                 raise
@@ -295,6 +297,7 @@ class PiDogZeniiBridge:
                 logger.warning("WS connection lost: %s", exc)
                 self._enqueue_action(LEDS_ALERT)
                 await asyncio.sleep(self._config.ws_reconnect_delay_secs)
+                self._enqueue_action(LEDS_LISTENING)
             except Exception as exc:
                 logger.error("Voice loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(1)
