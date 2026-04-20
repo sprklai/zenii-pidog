@@ -93,19 +93,10 @@ class RealHardware(HardwareInterface):
         logger.info("PiDog2 hardware initialized")
 
     def _read_imu_sync(self) -> tuple[float, float, float]:
-        """Read pitch/roll/yaw from IMU. Tries common pidog IMU API patterns."""
-        imu = self._dog.imu
-        # Try attitude properties first (most accurate)
-        if hasattr(imu, "pitch") and hasattr(imu, "roll"):
-            return float(imu.pitch or 0.0), float(imu.roll or 0.0), float(getattr(imu, "yaw", 0.0) or 0.0)
-        # Try get_accel / get_imu style
-        for method in ("get_accel", "read_imu", "read_accel"):
-            fn = getattr(imu, method, None)
-            if callable(fn):
-                data = fn()
-                if data and len(data) >= 2:
-                    return float(data[0]), float(data[1]), float(data[2]) if len(data) > 2 else 0.0
-        return 0.0, 0.0, 0.0
+        # pidog updates dog.pitch and dog.roll via its internal imu_thread
+        pitch = float(getattr(self._dog, "pitch", 0.0) or 0.0)
+        roll = float(getattr(self._dog, "roll", 0.0) or 0.0)
+        return pitch, roll, 0.0
 
     def _read_sensors_sync(self) -> SensorReading:
         distance = self._dog.read_distance()
@@ -138,19 +129,26 @@ class RealHardware(HardwareInterface):
                 self._dog.do_action, action.action, speed=action.speed
             )
 
+    # Maps user-facing LED mode names to pidog RGBStrip style names
+    _LED_MODE_MAP: dict[str, str] = {
+        "solid": "monochromatic",
+        "blink": "boom",
+        "trail": "speak",
+        "breath": "breath",
+    }
+
     async def set_leds(self, cmd: LEDCommand) -> None:
         r, g, b = _hex_to_rgb(cmd.color)
-        # set_mode(style, color, bps, brightness)
-        # brightness: 0-1 float; bps: beats-per-second for animated modes
+        style = self._LED_MODE_MAP.get(cmd.mode, "monochromatic")
         brightness = max(0.0, min(1.0, cmd.brightness / 100.0))
-        bps = 1.0  # one cycle per second for breath/blink modes
+        bps = 1.0
         await asyncio.to_thread(
-            self._rgb.set_mode, cmd.mode, (r, g, b), bps, brightness
+            self._rgb.set_mode, style, (r, g, b), bps, brightness
         )
 
     async def close(self) -> None:
         try:
-            await asyncio.to_thread(self._rgb.set_mode, "solid", (0, 0, 0), 0, 0)
+            await asyncio.to_thread(self._rgb.set_mode, "monochromatic", (0, 0, 0), 1, 0)
         except Exception:
             pass
         try:

@@ -173,7 +173,7 @@ class PiDogZeniiBridge:
         # Safe hardware shutdown with timeout
         try:
             await asyncio.wait_for(
-                self._hardware.execute_action(PiDogAction("stand", 50)),
+                self._hardware.execute_action(PiDogAction("sit", 50)),
                 timeout=3.0,
             )
         except (asyncio.TimeoutError, Exception):
