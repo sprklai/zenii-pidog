@@ -39,21 +39,18 @@ VALID_ACTIONS: set[str] = {
     "surprise",
 }
 
-# Maps AI-facing action names → pidog ActionDict keys where they differ.
-# Actions not in this map are passed through unchanged.
+# Maps AI-facing action names → pidog do_action() keys where they differ.
+# pidog accepts both ActionDict keys (underscores) and OPERATIONS keys (spaces).
+# Actions not in this map pass through unchanged (e.g. howling, pant, nod, think, surprise
+# are all valid OPERATIONS names).
 ACTION_MAP: dict[str, str] = {
     "lie_down":      "lie",
-    "bark_harder":   "bark",
-    "howling":       "wag_tail",      # closest expressive substitute
-    "pant":          "wag_tail",
-    "shake_hand":    "shake_hand",
-    "high_five":     "high_five",
-    "body_twisting": "stretch",
-    "head_up":       "head_up_down",
-    "head_down":     "head_up_down",
-    "nod":           "nod_lethargy",
-    "think":         "tilting_head",
-    "surprise":      "head_up_down",
+    "bark_harder":   "bark harder",   # OPERATIONS key
+    "shake_hand":    "handshake",     # OPERATIONS key (shake_hand is not a valid pidog name)
+    "high_five":     "high five",     # OPERATIONS key (space, not underscore)
+    "body_twisting": "twist body",    # OPERATIONS key
+    "head_up":       "head_up_down",  # ActionDict
+    "head_down":     "head_up_down",  # ActionDict
 }
 
 VALID_LED_MODES: set[str] = {"solid", "blink", "breath", "trail"}

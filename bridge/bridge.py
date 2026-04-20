@@ -220,6 +220,13 @@ class PiDogZeniiBridge:
         - LEDs set to thinking BEFORE sending prompt
         - TTS starts as soon as text is available
         """
+        # Announce readiness via TTS so the user knows the bridge is live
+        try:
+            await self._voice.speak("I am ready")
+            await asyncio.sleep(0.5)
+        except Exception as exc:
+            logger.warning("Startup TTS failed: %s", exc)
+
         while not self._shutdown_event.is_set():
             try:
                 text = await self._voice.listen()
@@ -342,8 +349,11 @@ class PiDogZeniiBridge:
         All sensor reads have timeouts to prevent hanging on faulty hardware.
         Memory storage is fire-and-forget to avoid blocking the loop.
         """
-        # Allow pidog hardware threads and gpiozero to fully settle after init
-        await asyncio.sleep(3.0)
+        # Allow pidog hardware threads and gpiozero to fully settle after init.
+        # sound_effect init can take 30+ seconds (pinctrl subprocess); we wait
+        # for the full init to complete before taking the first sensor read.
+        await asyncio.sleep(5.0)
+        _startup_grace = time.time() + 15.0  # suppress transient GPIO errors at boot
         while not self._shutdown_event.is_set():
             try:
                 reading = await asyncio.wait_for(
@@ -377,7 +387,10 @@ class PiDogZeniiBridge:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Sensor loop error: %s", exc)
+                if time.time() < _startup_grace:
+                    logger.debug("Sensor startup transient (suppressed): %s", exc)
+                else:
+                    logger.warning("Sensor loop error: %s", exc)
 
             await asyncio.sleep(self._config.sensor_interval_secs)
 
@@ -446,15 +459,29 @@ class PiDogZeniiBridge:
 
         Each action has a timeout to prevent servo hangs from blocking the queue.
         Exceptions are logged and swallowed — the queue must keep draining.
+
+        Note: queue.get() is wrapped in ensure_future so it becomes a Task with a
+        proper lifecycle.  Passing a raw coroutine to wait_for in Python 3.13 leaves
+        an undone coroutine on cancellation whose __del__ tries to call
+        loop.call_soon() after the loop is closed → RuntimeError noise on shutdown.
         """
         while not self._shutdown_event.is_set():
+            get_task = asyncio.ensure_future(self._action_queue.get())
             try:
-                item = await asyncio.wait_for(
-                    self._action_queue.get(), timeout=1.0
-                )
+                item = await asyncio.wait_for(asyncio.shield(get_task), timeout=1.0)
             except asyncio.TimeoutError:
+                get_task.cancel()
+                try:
+                    await get_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 continue
             except asyncio.CancelledError:
+                get_task.cancel()
+                try:
+                    await get_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 raise
 
             try:
