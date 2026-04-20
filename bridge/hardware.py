@@ -109,8 +109,13 @@ class RealHardware(HardwareInterface):
 
     def _read_sensors_sync(self) -> SensorReading:
         distance = self._dog.read_distance()
-        touch = self._dog.dual_touch.read()
-        # sound_direction.read() returns degrees 0-359 or -1 if not detected
+        try:
+            touch = self._dog.dual_touch.read()
+        except AttributeError:
+            # robot_hat Pin.value() calls InputDevice.on() which is missing in
+            # newer gpiozero — fall back to the pidog-managed touch attribute
+            touch = getattr(self._dog, "touch", "N")
+        # ears.read() returns 0-359 degrees or -1 if no sound detected
         sound_dir = self._dog.ears.read()
         pitch, roll, yaw = self._read_imu_sync()
 
@@ -144,6 +149,10 @@ class RealHardware(HardwareInterface):
         )
 
     async def close(self) -> None:
+        try:
+            await asyncio.to_thread(self._rgb.set_mode, "solid", (0, 0, 0), 0, 0)
+        except Exception:
+            pass
         try:
             await asyncio.to_thread(self._dog.close)
         except Exception:
