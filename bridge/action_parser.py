@@ -53,7 +53,7 @@ ACTION_MAP: dict[str, str] = {
     "head_down":     "head_up_down",  # ActionDict
 }
 
-VALID_LED_MODES: set[str] = {"solid", "blink", "breath", "trail"}
+VALID_LED_MODES: set[str] = {"solid", "blink", "breath", "trail", "listen", "bark"}
 
 _ACTION_RE = re.compile(r"<pidog_action>(.*?)</pidog_action>", re.DOTALL)
 _LEDS_RE = re.compile(r"<pidog_leds>(.*?)</pidog_leds>", re.DOTALL)

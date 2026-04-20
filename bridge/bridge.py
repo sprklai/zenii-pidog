@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # LED presets
 LEDS_IDLE = LEDCommand(mode="breath", color="#333399", brightness=20)
+LEDS_LISTENING = LEDCommand(mode="listen", color="#00AAFF", brightness=60)
 LEDS_THINKING = LEDCommand(mode="trail", color="#0088FF", brightness=50)
 LEDS_ALERT = LEDCommand(mode="blink", color="#FF0000", brightness=100)
 LEDS_HAPPY = LEDCommand(mode="breath", color="#00FF00", brightness=80)
@@ -229,8 +230,11 @@ class PiDogZeniiBridge:
 
         while not self._shutdown_event.is_set():
             try:
+                # Show listening LEDs before recording, then wait for speech
+                self._enqueue_action(LEDS_LISTENING)
                 text = await self._voice.listen()
                 if text is None:
+                    self._enqueue_action(LEDS_IDLE)
                     await asyncio.sleep(0.05)
                     continue
 
@@ -411,6 +415,7 @@ class PiDogZeniiBridge:
                     PiDogAction("wag_tail", self._config.default_action_speed)
                 )
                 self._enqueue_action(LEDS_HAPPY)
+                self._fire_and_forget(self._reset_leds_after(3.0))
                 self._fire_and_forget(
                     self._store_event(
                         f"pidog:event:touch:{int(now)}",
@@ -423,6 +428,7 @@ class PiDogZeniiBridge:
             if now - self._last_obstacle_event > self._config.obstacle_cooldown_secs:
                 self._last_obstacle_event = now
                 self._enqueue_action(LEDS_ALERT)
+                self._fire_and_forget(self._reset_leds_after(5.0))
                 self._fire_and_forget(
                     self._store_event(
                         f"pidog:event:obstacle:{int(now)}",
@@ -441,6 +447,11 @@ class PiDogZeniiBridge:
                         f"Sudden movement (pitch={pitch_delta:.1f}, roll={roll_delta:.1f})",
                     )
                 )
+
+    async def _reset_leds_after(self, delay: float) -> None:
+        """Return LEDs to idle after a reactive trigger animation finishes."""
+        await asyncio.sleep(delay)
+        self._enqueue_action(LEDS_IDLE)
 
     async def _store_event(self, key: str, content: str) -> None:
         """Store a sensor event to Zenii memory. Fire-and-forget safe."""

@@ -85,9 +85,15 @@ class RealHardware(HardwareInterface):
     """Wraps actual PiDog2 library. Sync calls run via asyncio.to_thread()."""
 
     def __init__(self) -> None:
+        import gc
+
         from pidog import Pidog  # type: ignore[import-untyped]
 
         self._dog = Pidog()
+        # Force GC so intermediate gpiozero objects created during Pidog.__init__
+        # are finalized NOW (in this thread) rather than later in the asyncio loop,
+        # which would print "Exception ignored in GPIOBase.__del__: GPIO busy".
+        gc.collect()
         self._rgb = self._dog.rgb_strip
         self._action_lock = asyncio.Lock()
         logger.info("PiDog2 hardware initialized")
@@ -130,12 +136,15 @@ class RealHardware(HardwareInterface):
                 self._dog.do_action, action.action, speed=action.speed
             )
 
-    # Maps user-facing LED mode names to pidog RGBStrip style names
+    # Maps user-facing LED mode names to pidog RGBStrip style names.
+    # Full pidog style list: monochromatic, breath, boom, bark, speak, listen
     _LED_MODE_MAP: dict[str, str] = {
-        "solid": "monochromatic",
-        "blink": "boom",
-        "trail": "speak",
-        "breath": "breath",
+        "solid":   "monochromatic",
+        "blink":   "boom",
+        "trail":   "speak",
+        "breath":  "breath",
+        "listen":  "listen",
+        "bark":    "bark",
     }
 
     async def set_leds(self, cmd: LEDCommand) -> None:
