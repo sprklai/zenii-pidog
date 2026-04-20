@@ -339,6 +339,8 @@ class PiDogZeniiBridge:
         All sensor reads have timeouts to prevent hanging on faulty hardware.
         Memory storage is fire-and-forget to avoid blocking the loop.
         """
+        # Allow pidog hardware threads and gpiozero to fully settle after init
+        await asyncio.sleep(3.0)
         while not self._shutdown_event.is_set():
             try:
                 reading = await asyncio.wait_for(
