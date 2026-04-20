@@ -262,7 +262,7 @@ User said: "Hey Buddy, come here!"
 |---|---|---|---|
 | Ultrasonic | `my_dog.read_distance()` | `Distance: {N}cm` | `< 15cm` -> alert |
 | Touch | `my_dog.dual_touch.read()` | `Touch: left/right/both/none` | Any touch -> "being petted" |
-| Sound Dir | `my_dog.SOUND_DIR.read()` | `Sound: {N} degrees` | Sustained -> look toward |
+| Sound Dir | `my_dog.ears.read()` | `Sound: {N} degrees` | Sustained -> look toward |
 | IMU | `my_dog.imu` (sh3001) | `IMU: {pitch}, {roll}` | Sudden change -> "picked up" |
 
 ---

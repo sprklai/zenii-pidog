@@ -111,7 +111,7 @@ class RealHardware(HardwareInterface):
         distance = self._dog.read_distance()
         touch = self._dog.dual_touch.read()
         # sound_direction.read() returns degrees 0-359 or -1 if not detected
-        sound_dir = self._dog.SOUND_DIR.read()
+        sound_dir = self._dog.ears.read()
         pitch, roll, yaw = self._read_imu_sync()
 
         return SensorReading(
