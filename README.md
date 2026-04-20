@@ -260,10 +260,10 @@ User said: "Hey Buddy, come here!"
 
 | Sensor | Read Method | Context String | Reactive Trigger |
 |---|---|---|---|
-| Ultrasonic | `my_dog.ultrasonic.read_distance()` | `Distance: {N}cm` | `< 15cm` -> alert |
+| Ultrasonic | `my_dog.read_distance()` | `Distance: {N}cm` | `< 15cm` -> alert |
 | Touch | `my_dog.dual_touch.read()` | `Touch: left/right/both/none` | Any touch -> "being petted" |
-| Sound Dir | `my_dog.sound_direction.read_direction()` | `Sound: {N} degrees` | Sustained -> look toward |
-| IMU | `my_dog.imu.read_accel()` | `IMU: {pitch}, {roll}` | Sudden change -> "picked up" |
+| Sound Dir | `my_dog.SOUND_DIR.read()` | `Sound: {N} degrees` | Sustained -> look toward |
+| IMU | `my_dog.imu` (sh3001) | `IMU: {pitch}, {roll}` | Sudden change -> "picked up" |
 
 ---
 
@@ -316,9 +316,14 @@ WantedBy=multi-user.target
 
 | File | Purpose |
 |------|---------|
-| `01_pidog_setup_script.sh` | One-command installer: binaries + config + identity + bridge + systemd |
-| `02_post_install_script.sh` | Interactive provider/key setup + demo chat |
-| `03_capabilities_test.sh` | Full capability test suite (12 categories) |
+| `01_pidog_setup_script.sh` | One-command installer: downloads ARM64 binaries, creates PiDog-tuned config, writes robot dog personality files, and sets up systemd auto-start |
+| `02_post_install_script.sh` | Interactive post-install wizard: selects AI provider, stores API key, sets default model, tests chat, and demos personality swapping + memory persistence |
+| `03_capabilities_test.sh` | Full capability test suite (12 categories) — demonstrates every major capability Zenii adds to PiDog vs. stock |
+| `04_bridge_usage_examples.sh` | Interactive bridge setup & verification: picks voice provider, stores API keys in Zenii, verifies prerequisites, and tests bridge connectivity |
+| `05_create_bridge_config.sh` | Generates `bridge_config.toml` with real values pulled from the Zenii credential store and current environment (text, local, and pipecat voice providers) |
+| `06_sync_bridge.sh` | Syncs local `bridge/` files to the Pi over SSH (rsync), shows file drift report, and optionally restarts the `pidog-bridge` systemd service |
+| `fix_gpio.sh` | Frees GPIO pins on the Pi — stops conflicting services, kills stale Python processes, and verifies GPIO is clear before starting the bridge |
+| `run_scripts.sh` | Script runner & usage reference: `--setup` runs first-time setup scripts in order on the Pi, `--sync pi@<IP>` pushes updated bridge code from dev machine |
 | `bridge/` | Python bridge package — hardware <-> Zenii gateway |
 | `bridge/README.md` | Bridge setup, voice providers, env vars, troubleshooting |
 
@@ -337,6 +342,45 @@ WantedBy=multi-user.target
 | `crates/zenii-core/src/gateway/routes.rs` | All 133 API routes |
 | `crates/zenii-core/src/identity/loader.rs` | SoulLoader + hot-reload |
 | `crates/zenii-core/src/memory/sqlite_store.rs` | Persistent memory (FTS5 + vector) |
+
+---
+
+## Troubleshooting
+
+### GPIO busy on startup
+
+If the bridge logs `GPIO busy` or `Failed to initialize PiDog hardware`, a stale process is holding the GPIO pins. Run `fix_gpio.sh` on the Pi:
+
+```bash
+bash /home/neil/fix_gpio.sh
+```
+
+This stops `zenii-pidog.service`, kills any suspended Python/pidog processes, and verifies GPIO is free. Common causes:
+
+- Ctrl+Z (suspend) instead of Ctrl+C to stop the bridge — always use Ctrl+C
+- `zenii-pidog.service` running while you manually start a second bridge instance
+- Previous bridge crashed without releasing GPIO
+
+### pidog / robot_hat not found in venv
+
+The pidog library and its dependencies (`robot_hat`, `gpiozero`, etc.) are installed system-wide at `/usr/local/lib/python3.13/dist-packages`. Create the venv with `--system-site-packages` to inherit them:
+
+```bash
+cd /home/neil/pidog-zenii
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install -r bridge/requirements.txt
+python3 -c "import pidog; print('OK')"
+```
+
+### Zenii daemon not ready
+
+If the bridge logs `Daemon not ready, retrying`, the `zenii-pidog.service` is not running:
+
+```bash
+sudo systemctl start zenii-pidog
+sudo systemctl status zenii-pidog
+```
 
 ---
 

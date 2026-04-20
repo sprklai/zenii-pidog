@@ -108,10 +108,10 @@ class RealHardware(HardwareInterface):
         return 0.0, 0.0, 0.0
 
     def _read_sensors_sync(self) -> SensorReading:
-        distance = self._dog.ultrasonic.read_distance()
+        distance = self._dog.read_distance()
         touch = self._dog.dual_touch.read()
         # sound_direction.read() returns degrees 0-359 or -1 if not detected
-        sound_dir = self._dog.sound_direction.read()
+        sound_dir = self._dog.SOUND_DIR.read()
         pitch, roll, yaw = self._read_imu_sync()
 
         return SensorReading(
