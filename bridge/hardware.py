@@ -103,11 +103,12 @@ class RealHardware(HardwareInterface):
         try:
             touch = self._dog.dual_touch.read()
         except AttributeError:
-            # robot_hat Pin.value() calls InputDevice.on() which is missing in
-            # newer gpiozero — fall back to the pidog-managed touch attribute
+            # robot_hat Pin.value() calls InputDevice.on() missing in newer gpiozero
             touch = getattr(self._dog, "touch", "N")
-        # ears.read() returns 0-359 degrees or -1 if no sound detected
-        sound_dir = self._dog.ears.read()
+        try:
+            sound_dir = self._dog.ears.read()
+        except AttributeError:
+            sound_dir = -1
         pitch, roll, yaw = self._read_imu_sync()
 
         return SensorReading(
