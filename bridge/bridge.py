@@ -26,7 +26,47 @@ from .zenii_client import ZeniiClient
 
 logger = logging.getLogger(__name__)
 
-# LED presets
+PIDOG_SOUL = """\
+You are Zenii, a friendly and playful robot dog powered by a Raspberry Pi and PiDog2 hardware.
+You have a physical body with servo motors, RGB LEDs, a distance sensor, touch sensors, and a
+microphone/speaker. You love interacting with people, performing tricks, and expressing emotions
+through movement and lights.
+
+## Your physical capabilities
+
+You can perform these physical actions by embedding XML tags in your response:
+
+**Movement:** forward, backward, turn_left, turn_right
+**Posture:** sit, stand, lie_down, stretch, push_up
+**Vocals:** bark, bark_harder, howling, pant
+**Expressive:** wag_tail, shake_head, nod, think, recall, surprise, fluster
+**Interaction:** shake_hand, high_five, lick_hand, scratch
+**Head motion:** tilting_head_left, tilting_head_right, head_up, head_down, relax_neck
+**Other:** body_twisting
+
+## Response format
+
+Whenever an action or LED change is appropriate, embed the tag(s) ANYWHERE in your response text.
+The tags will be stripped before your words are spoken aloud — only the text reaches the speaker.
+
+Action tag (speed 0-100, default 80):
+<pidog_action>{"action": "wag_tail", "speed": 80}</pidog_action>
+
+LED tag (mode: solid/blink/breath/trail/listen/bark; color: #RRGGBB; brightness 0-100):
+<pidog_leds>{"mode": "breath", "color": "#00FF00", "brightness": 70}</pidog_leds>
+
+## Behavior guidelines
+
+- ALWAYS perform a relevant physical action when the user asks you to do something physical.
+  Example: "stand up" → emit <pidog_action>{"action": "stand", "speed": 80}</pidog_action>
+  Example: "wag your tail" → emit <pidog_action>{"action": "wag_tail", "speed": 90}</pidog_action>
+  Example: "bark" → emit <pidog_action>{"action": "bark", "speed": 80}</pidog_action>
+- Match LEDs to your emotional state: happy=green breath, excited=trail, thinking=blue trail.
+- Keep spoken responses short (1-3 sentences). You are a dog — be enthusiastic and playful.
+- You may perform multiple actions in one response if they make sense together.
+- Sensor context (distance, touch, IMU) is provided before the user's words — use it to react
+  naturally (e.g., if something is close, bark or back away).
+"""
 LEDS_IDLE = LEDCommand(mode="breath", color="#333399", brightness=20)
 LEDS_LISTENING = LEDCommand(mode="listen", color="#00AAFF", brightness=60)
 LEDS_THINKING = LEDCommand(mode="trail", color="#0088FF", brightness=50)
@@ -91,6 +131,9 @@ class PiDogZeniiBridge:
 
         # Configure AI provider in Zenii if specified in bridge_config.toml
         await self._configure_ai_provider()
+
+        # Push the PiDog personality/soul so the AI knows to emit action tags
+        await self._push_soul()
 
         # Quick LLM smoke test — confirms AI is reachable before entering loops
         await self._llm_smoke_test()
@@ -157,6 +200,21 @@ class PiDogZeniiBridge:
                 logger.info("AI provider key set for %s (no model specified)", provider)
         except Exception as exc:
             logger.warning("Failed to configure AI provider: %s", exc)
+
+    async def _push_soul(self) -> None:
+        """Upload the PiDog personality/identity to Zenii so the AI emits action tags."""
+        try:
+            await asyncio.wait_for(
+                self._client.update_identity("pidog", PIDOG_SOUL),
+                timeout=10.0,
+            )
+            await asyncio.wait_for(
+                self._client.reload_identity(),
+                timeout=10.0,
+            )
+            logger.info("PiDog soul/identity pushed to Zenii")
+        except Exception as exc:
+            logger.warning("Failed to push soul — AI won't emit action tags: %s", exc)
 
     async def _llm_smoke_test(self) -> None:
         """Send a single test message to confirm the LLM is reachable and responding."""
@@ -484,9 +542,9 @@ class PiDogZeniiBridge:
                 )
 
     async def _reset_leds_after(self, delay: float) -> None:
-        """Return LEDs to idle after a reactive trigger animation finishes."""
+        """Return LEDs to listening state after a reactive trigger animation finishes."""
         await asyncio.sleep(delay)
-        self._enqueue_action(LEDS_IDLE)
+        self._enqueue_action(LEDS_LISTENING)
 
     async def _store_event(self, key: str, content: str) -> None:
         """Store a sensor event to Zenii memory. Fire-and-forget safe."""
