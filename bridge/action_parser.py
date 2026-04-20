@@ -114,6 +114,29 @@ class ParsedResponse:
     led_commands: list[LEDCommand]
 
 
+# Common LLM-invented aliases → canonical VALID_ACTIONS names
+_ACTION_ALIASES: dict[str, str] = {
+    "stand_up":      "stand",
+    "get_up":        "stand",
+    "sit_down":      "sit",
+    "lay_down":      "lie_down",
+    "wag":           "wag_tail",
+    "tail_wag":      "wag_tail",
+    "shake_tail":    "wag_tail",
+    "head_shake":    "shake_head",
+    "bow":           "stretch",
+    "jump":          "push_up",
+    "handshake":     "shake_hand",
+    "high_5":        "high_five",
+    "tilt_left":     "tilting_head_left",
+    "tilt_right":    "tilting_head_right",
+    "twist":         "body_twisting",
+    "howl":          "howling",
+    "panting":       "pant",
+    "bark_loud":     "bark_harder",
+}
+
+
 def parse_response(text: str, default_speed: int = 80) -> ParsedResponse:
     """Extract all <pidog_action> and <pidog_leds> tags from response text.
 
@@ -133,7 +156,10 @@ def parse_response(text: str, default_speed: int = 80) -> ParsedResponse:
             logger.warning("Invalid JSON in <pidog_action>: %s", raw)
             continue
 
-        action_name = data.get("action", "")
+        # Normalize: lowercase + collapse spaces/hyphens to underscores
+        action_name = data.get("action", "").lower().strip().replace(" ", "_").replace("-", "_")
+        # Resolve common LLM aliases before validation
+        action_name = _ACTION_ALIASES.get(action_name, action_name)
         if action_name not in VALID_ACTIONS:
             logger.warning("Unknown action: %s", action_name)
             continue

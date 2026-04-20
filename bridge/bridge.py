@@ -388,8 +388,9 @@ class PiDogZeniiBridge:
     def _build_prompt(self, user_text: str) -> str:
         """Prepend sensor context and action-tag reminder to user speech."""
         reminder = (
-            '[Rule: for any physical action embed <pidog_action>{"action":"NAME","speed":80}'
-            "</pidog_action> in your reply]"
+            '[Rule: always include spoken text AND embed action tags for physical requests. '
+            'Use exact lowercase names from the soul. '
+            'Example — "Sure! <pidog_action>{"action":"stand","speed":80}</pidog_action>"]'
         )
         parts = []
         if self._last_sensor:
