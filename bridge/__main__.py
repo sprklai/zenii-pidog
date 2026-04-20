@@ -30,12 +30,52 @@ def _file_sha(path: Path) -> str:
         return "?"
 
 
+class _ColorFormatter(logging.Formatter):
+    """Color-code log lines by pipeline stage using ANSI escape codes."""
+
+    # Prefixes that mark specific pipeline stages
+    _STAGE_COLORS = {
+        "User:":         "\033[92m",   # bright green  — STT captured speech
+        "Speaking:":     "\033[95m",   # bright magenta — TTS output
+        ">>>":           "\033[93m",   # bright yellow  — sending to LLM
+        "<<<":           "\033[96m",   # bright cyan    — LLM response
+        "AI raw:":       "\033[96m",   # bright cyan
+        "LLM smoke":     "\033[96m",   # bright cyan
+        "Queuing action:":  "\033[94m",  # bright blue  — action queued
+        "Executing action:": "\033[94m", # bright blue  — action running
+        "Queuing LED:":     "\033[34m",  # blue         — LED queued
+        "Executing LED:":   "\033[34m",  # blue         — LED running
+        "No clean text":    "\033[91m",  # bright red   — warning
+    }
+
+    _LEVEL_COLORS = {
+        "WARNING":  "\033[33m",   # yellow
+        "ERROR":    "\033[31m",   # red
+        "CRITICAL": "\033[41m",   # red background
+    }
+
+    _RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        # Try stage color first (based on message content)
+        for prefix, color in self._STAGE_COLORS.items():
+            if prefix in record.getMessage():
+                return f"{color}{msg}{self._RESET}"
+        # Fall back to level color
+        color = self._LEVEL_COLORS.get(record.levelname, "")
+        return f"{color}{msg}{self._RESET}" if color else msg
+
+
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(
+        _ColorFormatter(
+            fmt="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+            datefmt="%H:%M:%S",
+        )
     )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
     logger = logging.getLogger("bridge")
 
     config = BridgeConfig.load()

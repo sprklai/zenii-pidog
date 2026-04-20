@@ -92,6 +92,9 @@ class PiDogZeniiBridge:
         # Configure AI provider in Zenii if specified in bridge_config.toml
         await self._configure_ai_provider()
 
+        # Quick LLM smoke test — confirms AI is reachable before entering loops
+        await self._llm_smoke_test()
+
         # Set idle mood
         self._enqueue_action(LEDS_IDLE)
 
@@ -154,6 +157,23 @@ class PiDogZeniiBridge:
                 logger.info("AI provider key set for %s (no model specified)", provider)
         except Exception as exc:
             logger.warning("Failed to configure AI provider: %s", exc)
+
+    async def _llm_smoke_test(self) -> None:
+        """Send a single test message to confirm the LLM is reachable and responding."""
+        logger.info("LLM smoke test: sending 'Reply with OK only'...")
+        try:
+            reply = await asyncio.wait_for(
+                self._ws_chat("Reply with the single word OK and nothing else."),
+                timeout=15.0,
+            )
+            if reply:
+                logger.info("LLM smoke test PASSED — reply: %s", reply.strip()[:80])
+            else:
+                logger.warning("LLM smoke test got empty reply — check AI provider config")
+        except asyncio.TimeoutError:
+            logger.warning("LLM smoke test TIMED OUT — AI may not be responding")
+        except Exception as exc:
+            logger.warning("LLM smoke test FAILED: %s", exc)
 
     async def _shutdown_watcher(self) -> None:
         """Wait for shutdown signal, then cancel all tasks."""
@@ -316,7 +336,9 @@ class PiDogZeniiBridge:
         but not returned (they're intermediate AI reasoning steps).
         """
         await self._client.ws_ensure_connected()
+        logger.info(">>> Sending to LLM: %s", prompt)
         await self._client.ws_send_prompt(prompt, self._session_id)
+        logger.info(">>> Waiting for LLM response...")
 
         accumulated: list[str] = []
 
@@ -326,10 +348,11 @@ class PiDogZeniiBridge:
             if msg_type == "text":
                 content = msg.get("content", "")
                 if content:
+                    logger.info("<<< LLM chunk: %s", content[:200])
                     accumulated.append(content)
 
             elif msg_type == "tool_call":
-                logger.debug(
+                logger.info(
                     "Tool call: %s(%s)",
                     msg.get("tool_name"),
                     msg.get("args"),
@@ -337,7 +360,7 @@ class PiDogZeniiBridge:
 
             elif msg_type == "tool_result":
                 success = "OK" if msg.get("success") else "FAIL"
-                logger.debug(
+                logger.info(
                     "Tool result: %s -> %s",
                     msg.get("tool_name"),
                     success,
@@ -352,6 +375,7 @@ class PiDogZeniiBridge:
                 return None
 
             elif msg_type == "done":
+                logger.info("<<< LLM done. Total length: %d chars", sum(len(s) for s in accumulated))
                 break
 
         return "".join(accumulated) if accumulated else None
