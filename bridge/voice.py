@@ -2,14 +2,17 @@
 
 Provider selection via PIDOG_VOICE_PROVIDER env var:
   "local"   - Vosk STT + piper-tts (offline, RPi-optimized)
-  "pipecat" - Cloud STT via Deepgram WebSocket streaming + TTS via Cartesia/etc REST
+  "pipecat" - Cloud STT + TTS via direct provider REST APIs
   "text"    - stdin/stdout fallback (development, SSH)
 
-Deepgram STT uses the WebSocket streaming API (not prerecorded REST) because:
-  - Streams 20ms audio chunks continuously — no fixed recording window
-  - Built-in VAD: knows exactly when you stop speaking (speech_final=true)
-  - ~300ms latency vs 3-5 second fixed-window batch approach
-  - Matches how Pipecat framework integrates Deepgram in production
+STT providers (set via pipecat_stt_provider / PIPECAT_STT_PROVIDER):
+  "groq"     - Groq Whisper (whisper-large-v3-turbo) — fastest, best accent support
+  "deepgram" - Deepgram Nova-2 WebSocket streaming — low latency, built-in VAD
+  "azure"    - Azure Speech batch REST
+  "google"   - Google Cloud Speech batch REST
+
+Groq Whisper uses VAD-based recording (energy threshold) then a single POST to
+api.groq.com/openai/v1/audio/transcriptions — no streaming required.
 """
 
 from __future__ import annotations
@@ -216,7 +219,9 @@ class CloudVoice(VoiceInterface):
         """Listen for speech and return transcript. None = no speech detected."""
         provider = self._config.pipecat_stt_provider.lower()
         try:
-            if provider == "deepgram":
+            if provider == "groq":
+                result = await self._stt_groq_batch()
+            elif provider == "deepgram":
                 result = await self._stt_deepgram_streaming()
             elif provider == "azure":
                 result = await self._stt_azure_batch()
@@ -234,6 +239,119 @@ class CloudVoice(VoiceInterface):
             return None
         except Exception as exc:
             logger.warning("STT failed: %s", exc)
+            return None
+
+    def _record_with_vad_sync(self) -> bytes | None:
+        """Record audio using energy-based VAD: wait for speech, stop on silence.
+
+        Returns raw int16 mono PCM or None if no speech heard within timeout.
+        """
+        try:
+            import numpy as np
+            import sounddevice as sd  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("sounddevice/numpy not installed — cannot capture audio")
+            return None
+
+        sample_rate = self._config.pipecat_sample_rate
+        device = self._config.mic_device if self._config.mic_device >= 0 else None
+        chunk_ms = 80
+        chunk_frames = int(sample_rate * chunk_ms / 1000)
+        # Use a lower threshold than the old batch approach — Indian accent speech
+        # can have lower energy; 300 RMS is a safe floor for real speech.
+        rms_threshold = max(300, int(self._config.silence_threshold * 32767 * 0.5))
+        wait_limit = int(self._config.listen_timeout_secs * 1000 / chunk_ms)
+        # Stop after 1.2s of silence following speech
+        silence_end_chunks = int(1200 / chunk_ms)
+
+        frames: list[bytes] = []
+        speech_started = False
+        silence_count = 0
+        wait_count = 0
+
+        logger.info("MIC listening (VAD, device=%s), speak now...",
+                    device if device is not None else "default")
+
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                blocksize=chunk_frames,
+                device=device,
+            ) as stream:
+                while True:
+                    chunk, _ = stream.read(chunk_frames)
+                    rms = int(np.sqrt(np.mean(chunk.astype("float32") ** 2)))
+
+                    if not speech_started:
+                        wait_count += 1
+                        if rms > rms_threshold:
+                            logger.info("MIC speech detected (RMS=%d)", rms)
+                            speech_started = True
+                            frames.append(chunk.tobytes())
+                            silence_count = 0
+                        elif wait_count >= wait_limit:
+                            return None  # timeout — no speech
+                    else:
+                        frames.append(chunk.tobytes())
+                        if rms < rms_threshold:
+                            silence_count += 1
+                            if silence_count >= silence_end_chunks:
+                                break  # speech ended
+                        else:
+                            silence_count = 0
+        except Exception as exc:
+            logger.warning("VAD recording failed: %s", exc)
+            return None
+
+        return b"".join(frames) if frames else None
+
+    async def _stt_groq_batch(self) -> str | None:
+        """Record with VAD then POST to Groq Whisper API.
+
+        Model: whisper-large-v3-turbo (fast, strong accent support).
+        Falls back to distil-whisper-large-v3-en if model config says so.
+        """
+        loop = asyncio.get_running_loop()
+        pcm = await loop.run_in_executor(self._executor, self._record_with_vad_sync)
+        if not pcm:
+            return None
+
+        wav = self._pcm_to_wav(pcm, self._config.pipecat_sample_rate)
+        model = self._config.pipecat_stt_model or "whisper-large-v3-turbo"
+
+        data = aiohttp.FormData()
+        data.add_field("file", wav, filename="audio.wav", content_type="audio/wav")
+        data.add_field("model", model)
+        data.add_field("language", "en")
+        data.add_field("response_format", "json")
+
+        headers = {"Authorization": f"Bearer {self._config.pipecat_stt_api_key}"}
+
+        try:
+            async with self._get_http().post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers=headers,
+                data=data,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 401:
+                    self._stt_fault_count += 1
+                    if self._stt_fault_count >= self._STT_FAULT_LIMIT:
+                        raise _SttConfigError("Groq API key invalid — check stt_api_key in bridge_config.toml")
+                    logger.warning("Groq STT auth error (check API key)")
+                    return None
+                resp.raise_for_status()
+                result = await resp.json()
+                text = result.get("text", "").strip()
+                if text:
+                    logger.info("STT FINAL (Groq): %s", text)
+                return text or None
+        except _SttConfigError:
+            raise
+        except Exception as exc:
+            logger.warning("Groq STT failed: %s", exc)
             return None
 
     async def _stt_deepgram_streaming(self) -> str | None:
