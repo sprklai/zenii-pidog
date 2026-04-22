@@ -144,6 +144,7 @@ class PiDogZeniiBridge:
 
         # Track fire-and-forget tasks for clean shutdown
         self._bg_tasks: set[asyncio.Task] = set()
+        self._lcd_dots_task: asyncio.Task | None = None
 
     # -- Lifecycle --
 
@@ -289,6 +290,8 @@ class PiDogZeniiBridge:
         """Graceful cleanup: sit, LEDs off, close connections."""
         logger.info("Shutting down bridge...")
 
+        self._stop_lcd_listening()
+
         # Cancel background tasks
         for task in self._bg_tasks:
             task.cancel()
@@ -350,6 +353,28 @@ class PiDogZeniiBridge:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
+    def _start_lcd_listening(self) -> None:
+        if self._lcd is None:
+            return
+        self._stop_lcd_listening()
+        self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
+
+    def _stop_lcd_listening(self) -> None:
+        if self._lcd_dots_task and not self._lcd_dots_task.done():
+            self._lcd_dots_task.cancel()
+        self._lcd_dots_task = None
+
+    async def _lcd_listening_animation(self) -> None:
+        patterns = ["Listening .   ", "Listening ..  ", "Listening ... "]
+        i = 0
+        try:
+            while True:
+                await asyncio.to_thread(self._lcd.show, 2, patterns[i % 3])
+                i += 1
+                await asyncio.sleep(0.6)
+        except asyncio.CancelledError:
+            pass
+
     # -- Voice Loop --
 
     async def _voice_loop(self) -> None:
@@ -370,6 +395,7 @@ class PiDogZeniiBridge:
         # Enter listening state once; stay there until speech is detected.
         # Only switch away when processing or speaking — no rapid cycling.
         self._enqueue_action(LEDS_LISTENING)
+        self._start_lcd_listening()
 
         while not self._shutdown_event.is_set():
             try:
@@ -380,6 +406,7 @@ class PiDogZeniiBridge:
                     continue
 
                 logger.info("User: %s", text)
+                self._stop_lcd_listening()
 
                 if self._lcd:
                     self._fire_and_forget(
@@ -403,6 +430,7 @@ class PiDogZeniiBridge:
                     self._enqueue_action(LEDS_ALERT)
                     await asyncio.sleep(1)
                     self._enqueue_action(LEDS_LISTENING)
+                    self._start_lcd_listening()
                     continue
 
                 if response_text:
@@ -447,6 +475,7 @@ class PiDogZeniiBridge:
 
                 # Done speaking — back to listening
                 self._enqueue_action(LEDS_LISTENING)
+                self._start_lcd_listening()
 
             except asyncio.CancelledError:
                 raise
@@ -455,9 +484,11 @@ class PiDogZeniiBridge:
                 self._enqueue_action(LEDS_ALERT)
                 await asyncio.sleep(self._config.ws_reconnect_delay_secs)
                 self._enqueue_action(LEDS_LISTENING)
+                self._start_lcd_listening()
             except Exception as exc:
                 logger.error("Voice loop error: %s", exc, exc_info=True)
                 await asyncio.sleep(1)
+                self._start_lcd_listening()
 
     def _build_prompt(self, user_text: str) -> str:
         """Prepend sensor context and action-tag reminder to user speech."""
