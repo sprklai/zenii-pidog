@@ -305,7 +305,7 @@ class PiDogZeniiBridge:
         if self._lcd:
             try:
                 await asyncio.to_thread(self._lcd.show, 1, "  Shutting down ")
-                await asyncio.to_thread(self._lcd.show, 2, "   Sitting...   ")
+                await asyncio.to_thread(self._lcd.show, 2, "  Lying down... ")
             except Exception:
                 pass
 

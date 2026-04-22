@@ -192,18 +192,15 @@ class RealHardware(HardwareInterface):
             )
 
     def _sit_and_stop_sync(self) -> None:
-        # Mirrors the official shutdown pattern from SunFounder examples:
-        #   my_dog.do_action('sit', speed=50)
-        #   my_dog.wait_all_done()
         # Called directly — bypasses the action queue/lock so it's safe
         # to invoke even after asyncio loops have been cancelled.
-        logger.info("Shutdown: moving PiDog to sit position ...")
+        logger.info("Shutdown: moving PiDog to lie down position ...")
         try:
-            self._dog.do_action("sit", speed=50)
+            self._dog.do_action("lie_down", speed=50)
             self._dog.wait_all_done()
-            logger.info("Shutdown: PiDog is sitting")
+            logger.info("Shutdown: PiDog is lying down")
         except Exception as exc:
-            logger.warning("Shutdown sit failed (continuing): %s", exc)
+            logger.warning("Shutdown lie_down failed (continuing): %s", exc)
 
     async def sit_and_stop(self) -> None:
         await asyncio.to_thread(self._sit_and_stop_sync)
