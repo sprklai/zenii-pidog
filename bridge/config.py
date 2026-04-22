@@ -113,6 +113,12 @@ class BridgeConfig:
     ws_max_reconnect_delay_secs: float = 60.0
     health_check_interval_secs: float = 10.0
 
+    # LCD1602 display (optional — requires python3-smbus + I2C wiring)
+    lcd_enabled: bool = False
+    lcd_i2c_address: int = 0x27   # 0x27 (PCF8574T) or 0x3F (PCF8574AT)
+    lcd_i2c_bus: int = 1
+    lcd_scroll_delay_secs: float = 0.35
+
     @classmethod
     def load(cls, toml_path: str | None = None) -> BridgeConfig:
         """Load config: env vars first, then optional TOML, then defaults."""
@@ -224,6 +230,14 @@ class BridgeConfig:
             "PIDOG_HEALTH_CHECK_INTERVAL", cfg.health_check_interval_secs
         )
 
+        # LCD display
+        cfg.lcd_enabled = _env_bool("PIDOG_LCD_ENABLED", cfg.lcd_enabled)
+        cfg.lcd_i2c_address = _env_int("PIDOG_LCD_ADDRESS", cfg.lcd_i2c_address)
+        cfg.lcd_i2c_bus = _env_int("PIDOG_LCD_BUS", cfg.lcd_i2c_bus)
+        cfg.lcd_scroll_delay_secs = _env_float(
+            "PIDOG_LCD_SCROLL_DELAY", cfg.lcd_scroll_delay_secs
+        )
+
         return cfg
 
     def _apply_toml(self, data: dict) -> None:
@@ -259,6 +273,7 @@ class BridgeConfig:
             "ws_chat_timeout_secs", "action_timeout_secs", "sensor_read_timeout_secs",
             "ws_reconnect_delay_secs", "ws_max_reconnect_delay_secs",
             "health_check_interval_secs",
+            "lcd_enabled", "lcd_i2c_address", "lcd_i2c_bus", "lcd_scroll_delay_secs",
         ]
         for key in simple_keys:
             if key in data:
@@ -295,3 +310,15 @@ class BridgeConfig:
         for toml_key, attr in pipecat_map.items():
             if toml_key in pipecat:
                 setattr(self, attr, pipecat[toml_key])
+
+        # [lcd] section
+        lcd = data.get("lcd", {})
+        lcd_map = {
+            "enabled": "lcd_enabled",
+            "address": "lcd_i2c_address",
+            "bus": "lcd_i2c_bus",
+            "scroll_delay": "lcd_scroll_delay_secs",
+        }
+        for toml_key, attr in lcd_map.items():
+            if toml_key in lcd:
+                setattr(self, attr, lcd[toml_key])

@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .action_parser import LEDCommand, PiDogAction, parse_response
 from .config import BridgeConfig
 from .hardware import HardwareInterface, SensorReading, create_hardware
+from .lcd import LCDDisplay
 from .voice import VoiceInterface, create_voice
 from .zenii_client import ZeniiClient
 
@@ -120,6 +122,12 @@ class PiDogZeniiBridge:
         self._client = ZeniiClient(config)
         self._hardware: HardwareInterface = create_hardware(config)
         self._voice: VoiceInterface = create_voice(config, executor)
+        self._lcd: LCDDisplay | None = None
+        if config.lcd_enabled:
+            try:
+                self._lcd = LCDDisplay(config.lcd_i2c_bus, config.lcd_i2c_address)
+            except Exception as exc:
+                logger.warning("LCD init failed (continuing without display): %s", exc)
 
         # Action pipeline: voice loop and sensor triggers enqueue;
         # action executor dequeues sequentially.
@@ -168,6 +176,14 @@ class PiDogZeniiBridge:
         self._enqueue_action(LEDS_IDLE)
 
         logger.info("Bridge started — entering main loops")
+
+        if self._lcd:
+            try:
+                await asyncio.to_thread(self._lcd.show, 1, "  Zenii PiDog  ")
+                await asyncio.to_thread(self._lcd.show, 2, "   I'm ready!  ")
+                await asyncio.sleep(2)
+            except Exception as exc:
+                logger.warning("LCD splash failed: %s", exc)
 
         try:
             await asyncio.gather(
@@ -296,6 +312,12 @@ class PiDogZeniiBridge:
         except (asyncio.TimeoutError, Exception):
             pass
 
+        if self._lcd:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self._lcd.close), timeout=2.0)
+            except Exception:
+                pass
+
         await self._hardware.close()
         await self._voice.close()
         await self._client.close()
@@ -351,6 +373,11 @@ class PiDogZeniiBridge:
 
                 logger.info("User: %s", text)
 
+                if self._lcd:
+                    self._fire_and_forget(
+                        asyncio.to_thread(self._lcd.show, 1, (">" + text)[:16].ljust(16))
+                    )
+
                 # Build prompt with sensor context
                 prompt = self._build_prompt(text)
 
@@ -390,7 +417,20 @@ class PiDogZeniiBridge:
                     # Speak the clean text (concurrent with action execution)
                     if parsed.clean_text:
                         logger.info("Speaking: %s", parsed.clean_text)
+                        stop_scroll = threading.Event()
+                        if self._lcd:
+                            self._fire_and_forget(
+                                asyncio.to_thread(
+                                    self._lcd.scroll, 2, parsed.clean_text,
+                                    self._config.lcd_scroll_delay_secs, stop_scroll,
+                                )
+                            )
                         await self._voice.speak(parsed.clean_text)
+                        stop_scroll.set()
+                        if self._lcd:
+                            self._fire_and_forget(
+                                asyncio.to_thread(self._lcd.show, 2, " " * 16)
+                            )
                         # Brief pause so the speaker finishes reverberating before
                         # the mic starts recording again — prevents TTS echo pickup
                         await asyncio.sleep(0.5)
