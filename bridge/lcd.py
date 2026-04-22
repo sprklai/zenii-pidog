@@ -98,6 +98,7 @@ class _LCD1602:
         self._write_i2c(self._backlight)
 
     def _init(self) -> None:
+        logger.debug("LCD: running HD44780 init sequence (4-bit mode)")
         time.sleep(0.05)
         # 4-bit init sequence (from HD44780 datasheet)
         for _ in range(3):
@@ -111,6 +112,7 @@ class _LCD1602:
         self.command(_CMD_CLEAR)
         time.sleep(0.002)
         self.command(_CMD_ENTRY_MODE)
+        logger.debug("LCD: init sequence complete")
 
 
 class LCDDisplay:
@@ -129,6 +131,7 @@ class LCDDisplay:
         """Write text to line 1 or 2 (1-based). Pads/truncates to 16 chars."""
         row = (line - 1) & 1
         padded = text[:16].ljust(16)
+        logger.debug("LCD line %d: %r", line, padded)
         with self._lock:
             self._lcd.set_cursor(row, 0)
             for ch in padded:
@@ -150,15 +153,19 @@ class LCDDisplay:
         For text > 16 chars: slides left one char at a time.
         """
         if len(text) <= 16:
+            logger.debug("LCD scroll line %d (static, %d chars): %r", line, len(text), text)
             self.show(line, text)
             stop.wait()
             return
 
+        logger.debug("LCD scroll line %d (%d chars, delay=%.2fs): %r", line, len(text), delay, text)
         padded = " " * 16 + text + " " * 16
         for i in range(len(padded) - 15):
             self.show(line, padded[i : i + 16])
             if stop.wait(delay):
+                logger.debug("LCD scroll line %d stopped at step %d", line, i)
                 return
+        logger.debug("LCD scroll line %d complete", line)
 
     def clear(self) -> None:
         """Blank both lines."""
