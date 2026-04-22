@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Standalone LCD1602 test script.
+"""Standalone LCD1602 test script — with contrast and I2C diagnostics.
 
-Run this directly on the Pi to verify wiring and driver before starting the bridge:
+Run this directly on the Pi (inside the venv):
 
-  # Inside the venv (recommended):
-  source /home/neil/pidog-zenii/.venv/bin/activate
-  python3 test_lcd.py
+  python3 test_lcd.py              # default address 0x27
+  python3 test_lcd.py --address 0x3F
 
-  # Or with a custom address / bus:
-  python3 test_lcd.py --address 0x3F --bus 1
-
-Each test step is logged. If a step fails the script stops and explains what to check.
+Step-by-step tests with clear pass/fail messages.
+If Step 4 shows backlight blinking but no characters → turn the contrast pot.
 """
 
 from __future__ import annotations
@@ -18,12 +15,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import threading
 import time
 
-# ---------------------------------------------------------------------------
-# Logging setup — timestamps + level + message
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -31,85 +24,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("lcd_test")
 
-
 # ---------------------------------------------------------------------------
-# Step 0 — smbus availability
-# ---------------------------------------------------------------------------
-def check_smbus() -> object:
-    log.info("━━━━ Step 0: checking smbus library ━━━━")
-    try:
-        import smbus2 as smbus
-        log.info("✓ smbus2 imported successfully (version: %s)", getattr(smbus, "__version__", "unknown"))
-        return smbus
-    except ImportError:
-        log.warning("smbus2 not found — trying system smbus (python3-smbus)")
-    try:
-        import smbus  # type: ignore[import]
-        log.info("✓ system smbus imported successfully")
-        return smbus
-    except ImportError:
-        log.error("✗ Neither smbus2 nor smbus found.")
-        log.error("  Fix: source /home/neil/pidog-zenii/.venv/bin/activate && pip install smbus2")
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Step 1 — open I2C bus
-# ---------------------------------------------------------------------------
-def open_bus(smbus, bus_num: int):
-    log.info("━━━━ Step 1: opening I2C bus %d ━━━━", bus_num)
-    try:
-        bus = smbus.SMBus(bus_num)
-        log.info("✓ I2C bus %d opened", bus_num)
-        return bus
-    except FileNotFoundError:
-        log.error("✗ /dev/i2c-%d not found — I2C not enabled", bus_num)
-        log.error("  Fix: sudo raspi-config → Interface Options → I2C → Enable → reboot")
-        sys.exit(1)
-    except PermissionError:
-        log.error("✗ Permission denied on /dev/i2c-%d", bus_num)
-        log.error("  Fix: sudo usermod -aG i2c $USER  then log out and back in")
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — detect LCD on I2C bus
-# ---------------------------------------------------------------------------
-def detect_lcd(bus, address: int) -> None:
-    log.info("━━━━ Step 2: scanning I2C bus for devices ━━━━")
-    found = []
-    for addr in range(0x03, 0x78):
-        try:
-            bus.read_byte(addr)
-            found.append(addr)
-            log.debug("  device found at 0x%02X", addr)
-        except Exception:
-            pass
-
-    if found:
-        log.info("✓ I2C devices found: %s", [f"0x{a:02X}" for a in found])
-    else:
-        log.error("✗ No I2C devices found on bus — check wiring (SDA/SCL/VCC/GND)")
-        sys.exit(1)
-
-    if address in found:
-        log.info("✓ LCD found at target address 0x%02X", address)
-    else:
-        log.error(
-            "✗ LCD not found at 0x%02X. Detected: %s",
-            address,
-            [f"0x{a:02X}" for a in found],
-        )
-        alt = 0x3F if address == 0x27 else 0x27
-        if alt in found:
-            log.error("  → Try --address 0x%02X (the other common PCF8574 address)", alt)
-        else:
-            log.error("  → Check VCC/GND wiring and contrast pot on backpack")
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Low-level LCD driver (self-contained, no bridge import needed)
+# PCF8574 → HD44780 bit mapping
+# P0=RS  P1=RW  P2=E  P3=BL  P4=D4  P5=D5  P6=D6  P7=D7
 # ---------------------------------------------------------------------------
 _RS = 0x01
 _EN = 0x04
@@ -123,6 +40,89 @@ _CMD_FUNC_SET   = 0x28
 _CMD_SET_DDRAM  = 0x80
 
 
+# ---------------------------------------------------------------------------
+# Step 0 — smbus
+# ---------------------------------------------------------------------------
+def check_smbus():
+    log.info("━━━━ Step 0: checking smbus library ━━━━")
+    try:
+        import smbus2 as smbus
+        log.info("✓ smbus2 %s imported", getattr(smbus, "__version__", ""))
+        return smbus
+    except ImportError:
+        pass
+    try:
+        import smbus  # type: ignore[import]
+        log.info("✓ system smbus imported")
+        return smbus
+    except ImportError:
+        log.error("✗ smbus not found — run: pip install smbus2")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — open bus
+# ---------------------------------------------------------------------------
+def open_bus(smbus, bus_num: int):
+    log.info("━━━━ Step 1: opening I2C bus %d ━━━━", bus_num)
+    try:
+        bus = smbus.SMBus(bus_num)
+        log.info("✓ I2C bus %d opened", bus_num)
+        return bus
+    except FileNotFoundError:
+        log.error("✗ /dev/i2c-%d not found — enable I2C via raspi-config", bus_num)
+        sys.exit(1)
+    except PermissionError:
+        log.error("✗ Permission denied — sudo usermod -aG i2c $USER then re-login")
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — scan bus
+# ---------------------------------------------------------------------------
+def detect_lcd(bus, address: int) -> None:
+    log.info("━━━━ Step 2: scanning I2C bus for devices ━━━━")
+    found = []
+    for addr in range(0x03, 0x78):
+        try:
+            bus.read_byte(addr)
+            found.append(addr)
+            log.debug("  device at 0x%02X", addr)
+        except Exception:
+            pass
+    log.info("✓ devices found: %s", [f"0x{a:02X}" for a in found])
+    if address not in found:
+        alt = 0x3F if address == 0x27 else 0x27
+        log.error("✗ LCD not at 0x%02X — try: python3 test_lcd.py --address 0x%02X", address, alt)
+        sys.exit(1)
+    log.info("✓ LCD detected at 0x%02X", address)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — raw I2C write test (backlight toggle — visible with eyes)
+# ---------------------------------------------------------------------------
+def test_backlight(bus, address: int) -> None:
+    log.info("━━━━ Step 3: backlight toggle test (I2C write check) ━━━━")
+    log.info("  Watch the LCD backlight — it should blink OFF for 1 second then ON")
+    try:
+        bus.write_byte(address, _BL)          # backlight ON
+        time.sleep(0.5)
+        bus.write_byte(address, 0x00)         # backlight OFF
+        log.info("  >>> backlight should be OFF now ...")
+        time.sleep(1.0)
+        bus.write_byte(address, _BL)          # backlight ON
+        log.info("  >>> backlight should be ON again")
+        time.sleep(0.5)
+        log.info("✓ I2C writes working (if backlight blinked)")
+        log.info("  If backlight did NOT blink → wiring problem on SDA/SCL/GND/VCC")
+    except Exception as exc:
+        log.error("✗ I2C write failed: %s", exc)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Low-level driver (self-contained)
+# ---------------------------------------------------------------------------
 class _RawLCD:
     def __init__(self, bus, address: int) -> None:
         self._b = bus
@@ -134,9 +134,9 @@ class _RawLCD:
 
     def _pulse(self, data: int) -> None:
         self._w(data | _EN)
-        time.sleep(0.0005)
+        time.sleep(0.001)        # 1ms — generous for slow displays
         self._w(data & ~_EN)
-        time.sleep(0.0001)
+        time.sleep(0.001)
 
     def _nibble(self, n: int, mode: int) -> None:
         d = (n & 0xF0) | mode | self._bl
@@ -150,145 +150,143 @@ class _RawLCD:
     def cmd(self, c: int) -> None:
         self._byte(c, 0)
 
-    def char(self, ch: str) -> None:
-        self._byte(ord(ch), _RS)
+    def char_byte(self, b: int) -> None:
+        """Write a raw byte as character data (for filled blocks etc.)."""
+        self._nibble(b & 0xF0, _RS)
+        self._nibble((b << 4) & 0xF0, _RS)
 
     def cursor(self, row: int, col: int) -> None:
         self.cmd(_CMD_SET_DDRAM | (_ROW[row] + col))
 
     def clear(self) -> None:
         self.cmd(_CMD_CLEAR)
-        time.sleep(0.002)
+        time.sleep(0.003)
 
     def backlight(self, on: bool) -> None:
         self._bl = _BL if on else 0
         self._w(self._bl)
-
-    def init(self) -> None:
-        time.sleep(0.05)
-        for _ in range(3):
-            self._nibble(0x30, 0)
-            time.sleep(0.005)
-        self._nibble(0x20, 0)
-        time.sleep(0.001)
-        self.cmd(_CMD_FUNC_SET)
-        self.cmd(_CMD_DISPLAY_ON)
-        self.cmd(_CMD_CLEAR)
-        time.sleep(0.002)
-        self.cmd(_CMD_ENTRY_MODE)
 
     def write_line(self, row: int, text: str) -> None:
         padded = text[:16].ljust(16)
         self.cursor(row, 0)
         for ch in padded:
             try:
-                self.char(ch)
+                self._byte(ord(ch), _RS)
             except Exception:
-                self.char("?")
+                self._byte(ord("?"), _RS)
+
+    def fill_blocks(self, row: int) -> None:
+        """Write 16 filled-block characters (chr(0xFF)) to a row.
+        These appear as solid dark rectangles regardless of contrast level.
+        """
+        self.cursor(row, 0)
+        for _ in range(16):
+            self.char_byte(0xFF)
+
+    def init(self) -> None:
+        time.sleep(0.1)           # extra wait after power-on
+        # HD44780 4-bit init sequence (with generous delays)
+        for delay in (0.005, 0.005, 0.002):
+            self._nibble(0x30, 0)
+            time.sleep(delay)
+        self._nibble(0x20, 0)     # switch to 4-bit mode
+        time.sleep(0.002)
+        self.cmd(_CMD_FUNC_SET)   # 0x28: 4-bit, 2 lines, 5x8
+        time.sleep(0.001)
+        self.cmd(_CMD_DISPLAY_ON) # 0x0C: display on, cursor off
+        time.sleep(0.001)
+        self.cmd(_CMD_CLEAR)      # 0x01: clear
+        time.sleep(0.003)
+        self.cmd(_CMD_ENTRY_MODE) # 0x06: L→R, no shift
+        time.sleep(0.001)
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — initialise LCD
+# Step 4 — init LCD
 # ---------------------------------------------------------------------------
 def init_lcd(bus, address: int) -> _RawLCD:
-    log.info("━━━━ Step 3: initialising LCD controller ━━━━")
+    log.info("━━━━ Step 4: initialising LCD HD44780 controller ━━━━")
     lcd = _RawLCD(bus, address)
     try:
         lcd.init()
-        log.info("✓ LCD HD44780 init sequence complete (4-bit mode, 2 lines)")
+        log.info("✓ HD44780 init complete (4-bit, 2 lines)")
         return lcd
     except Exception as exc:
-        log.error("✗ LCD init failed: %s", exc)
-        log.error("  Check VCC level (3.3V or 5V) and SDA/SCL connections")
+        log.error("✗ Init failed: %s", exc)
         sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
-# Test helpers
+# Step 5 — filled block test
 # ---------------------------------------------------------------------------
-def write_and_log(lcd: _RawLCD, row: int, text: str, label: str) -> None:
-    log.info("  Writing line %d: %r", row + 1, text)
-    lcd.write_line(row, text)
-    log.info("  ✓ %s written to line %d", label, row + 1)
+def test_filled_blocks(lcd: _RawLCD) -> None:
+    log.info("━━━━ Step 5: filled-block test ━━━━")
+    log.info("  Writing 16 solid blocks to each line (visible at any contrast level)")
+    lcd.fill_blocks(0)
+    lcd.fill_blocks(1)
+    log.info("  >>> CHECK: do you see two rows of solid dark rectangles?")
+    log.info("  If YES → LCD is working, contrast pot just needs adjustment")
+    log.info("  If NO  → check VCC (try 5V from RPi Pin 2 instead of HAT 3.3V)")
+    time.sleep(5)
 
 
-def scroll_line(lcd: _RawLCD, row: int, text: str, delay: float = 0.3) -> None:
+# ---------------------------------------------------------------------------
+# Step 6 — contrast guidance
+# ---------------------------------------------------------------------------
+def guide_contrast(lcd: _RawLCD) -> None:
+    log.info("━━━━ Step 6: contrast adjustment guide ━━━━")
+    log.info("  Writing text to both lines ...")
+    lcd.write_line(0, "ADJUST CONTRAST ")
+    lcd.write_line(1, "TURN BLUE POT-> ")
+    log.info("  >>> TURN THE BLUE SCREW POT on the back of the LCD backpack")
+    log.info("      (small blue rectangular component with a cross screw)")
+    log.info("      Turn slowly while looking at the LCD — text will appear")
+    log.info("      Clockwise = more contrast on most modules")
+    log.info("  Holding for 15 seconds — adjust the pot now ...")
+    time.sleep(15)
+
+
+# ---------------------------------------------------------------------------
+# Step 7 — static text test
+# ---------------------------------------------------------------------------
+def test_static(lcd: _RawLCD) -> None:
+    log.info("━━━━ Step 7: static text test ━━━━")
+    lcd.write_line(0, "  LCD Test OK   ")
+    lcd.write_line(1, " Zenii  PiDog   ")
+    log.info("  >>> Both lines should show readable text now")
+    time.sleep(3)
+
+
+# ---------------------------------------------------------------------------
+# Step 8 — scroll test
+# ---------------------------------------------------------------------------
+def test_scroll(lcd: _RawLCD) -> None:
+    log.info("━━━━ Step 8: scroll test (simulates TTS response) ━━━━")
+    lcd.write_line(0, ">sit down please")
+    text = "Sure! Let me sit down for you."
     padded = " " * 16 + text + " " * 16
-    steps = len(padded) - 15
-    log.info("  Scrolling %d steps at %.2fs each ...", steps, delay)
-    for i in range(steps):
-        lcd.write_line(row, padded[i : i + 16])
-        time.sleep(delay)
-    log.info("  ✓ Scroll complete")
+    log.info("  Scrolling %d chars on line 2 ...", len(text))
+    for i in range(len(padded) - 15):
+        lcd.write_line(1, padded[i : i + 16])
+        time.sleep(0.3)
+    log.info("✓ Scroll complete")
+    time.sleep(1)
 
 
 # ---------------------------------------------------------------------------
-# Test suite
+# Step 9 — bridge sim
 # ---------------------------------------------------------------------------
-def run_tests(lcd: _RawLCD) -> None:
-
-    # ── Test 4: static text ──────────────────────────────────────────────
-    log.info("━━━━ Step 4: static text test ━━━━")
-    write_and_log(lcd, 0, "  LCD Test OK  ", "static line 1")
-    write_and_log(lcd, 1, " Zenii  PiDog  ", "static line 2")
-    log.info("  >>> CHECK: does the LCD show text? If not, turn the contrast pot on the back.")
+def test_bridge_sim(lcd: _RawLCD) -> None:
+    log.info("━━━━ Step 9: bridge startup simulation ━━━━")
+    lcd.write_line(0, "  Zenii PiDog  ")
+    lcd.write_line(1, "   I'm ready!  ")
+    log.info("  >>> This is what the LCD will show when the bridge starts")
     time.sleep(3)
-
-    # ── Test 5: backlight toggle ─────────────────────────────────────────
-    log.info("━━━━ Step 5: backlight toggle ━━━━")
-    log.info("  Turning backlight OFF for 1s ...")
-    lcd.backlight(False)
-    time.sleep(1)
-    log.info("  Turning backlight ON ...")
-    lcd.backlight(True)
-    time.sleep(0.5)
-    log.info("  ✓ Backlight toggle OK")
-
-    # ── Test 6: all 16 positions on each line ────────────────────────────
-    log.info("━━━━ Step 6: character position test ━━━━")
-    write_and_log(lcd, 0, "0123456789ABCDEF", "position test line 1")
-    write_and_log(lcd, 1, "GHIJKLMNOPQRSTUV", "position test line 2")
-    log.info("  >>> CHECK: both lines should show 16 characters with no gaps")
-    time.sleep(3)
-
-    # ── Test 7: clear ────────────────────────────────────────────────────
-    log.info("━━━━ Step 7: clear display ━━━━")
-    lcd.clear()
-    log.info("  ✓ Display cleared (both lines blank)")
-    time.sleep(1)
-
-    # ── Test 8: scrolling text ───────────────────────────────────────────
-    log.info("━━━━ Step 8: scrolling text (simulates TTS response) ━━━━")
-    write_and_log(lcd, 0, ">sit down please", "user command")
-    log.info("  Scrolling PiDog response on line 2 ...")
-    scroll_line(lcd, 1, "Sure! Let me sit down for you.", delay=0.3)
-    time.sleep(1)
-
-    # ── Test 9: bridge-style display ─────────────────────────────────────
-    log.info("━━━━ Step 9: bridge simulation ━━━━")
-    log.info("  Showing startup splash (2s) ...")
-    write_and_log(lcd, 0, "  Zenii PiDog  ", "splash line 1")
-    write_and_log(lcd, 1, "   I'm ready!  ", "splash line 2")
-    time.sleep(2)
-
-    write_and_log(lcd, 0, ">hello pidog    ", "user input")
-    write_and_log(lcd, 1, "Woof! Hi there!", "short reply (static)")
-    time.sleep(2)
-
-    write_and_log(lcd, 0, ">do a push up   ", "user input")
-    log.info("  Scrolling longer reply ...")
-    scroll_line(lcd, 1, "Sure! Watch me do a push-up!", delay=0.3)
-
-    # ── Done ─────────────────────────────────────────────────────────────
-    log.info("━━━━ All tests passed ━━━━")
-    write_and_log(lcd, 0, "  All tests OK  ", "final line 1")
-    write_and_log(lcd, 1, "  Bridge ready  ", "final line 2")
-    time.sleep(3)
-
-    log.info("Clearing and turning off backlight")
     lcd.clear()
     lcd.backlight(False)
-    log.info("✓ Done — LCD is working correctly. Enable it in bridge_config.toml:")
+    log.info("✓ Done — LCD working correctly")
+    log.info("")
+    log.info("  Enable in bridge_config.toml:")
     log.info("    [lcd]")
     log.info("    enabled = true")
 
@@ -297,24 +295,27 @@ def run_tests(lcd: _RawLCD) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(description="LCD1602 I2C test script")
-    parser.add_argument("--address", default="0x27",
-                        help="I2C address of LCD (default: 0x27)")
-    parser.add_argument("--bus", type=int, default=1,
-                        help="I2C bus number (default: 1)")
+    parser = argparse.ArgumentParser(description="LCD1602 I2C test")
+    parser.add_argument("--address", default="0x27")
+    parser.add_argument("--bus", type=int, default=1)
     args = parser.parse_args()
 
     address = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
 
-    log.info("═══════════════════════════════════════")
-    log.info("  LCD1602 Test  bus=%d  address=0x%02X", args.bus, address)
-    log.info("═══════════════════════════════════════")
+    log.info("═══════════════════════════════════════════")
+    log.info("  LCD1602 Test   bus=%d   address=0x%02X", args.bus, address)
+    log.info("═══════════════════════════════════════════")
 
-    smbus = check_smbus()
-    bus = open_bus(smbus, args.bus)
+    smbus   = check_smbus()
+    bus     = open_bus(smbus, args.bus)
     detect_lcd(bus, address)
-    lcd = init_lcd(bus, address)
-    run_tests(lcd)
+    test_backlight(bus, address)
+    lcd     = init_lcd(bus, address)
+    test_filled_blocks(lcd)
+    guide_contrast(lcd)
+    test_static(lcd)
+    test_scroll(lcd)
+    test_bridge_sim(lcd)
 
 
 if __name__ == "__main__":
