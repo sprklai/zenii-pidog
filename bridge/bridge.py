@@ -286,7 +286,7 @@ class PiDogZeniiBridge:
         raise asyncio.CancelledError()
 
     async def _shutdown(self) -> None:
-        """Graceful cleanup: stand, LEDs off, close connections."""
+        """Graceful cleanup: sit, LEDs off, close connections."""
         logger.info("Shutting down bridge...")
 
         # Cancel background tasks
@@ -296,14 +296,22 @@ class PiDogZeniiBridge:
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
         self._bg_tasks.clear()
 
-        # Safe hardware shutdown with timeout
+        # Show shutdown message on LCD
+        if self._lcd:
+            try:
+                await asyncio.to_thread(self._lcd.show, 1, "  Shutting down ")
+                await asyncio.to_thread(self._lcd.show, 2, "   Sitting...   ")
+            except Exception:
+                pass
+
+        # Sit before shutdown — direct call bypasses action queue so it always
+        # executes even after asyncio loops are cancelled (mirrors official
+        # SunFounder pattern: do_action('sit') + wait_all_done() + close()).
         try:
-            await asyncio.wait_for(
-                self._hardware.execute_action(PiDogAction("sit", 50)),
-                timeout=3.0,
-            )
-        except (asyncio.TimeoutError, Exception):
-            pass
+            await asyncio.wait_for(self._hardware.sit_and_stop(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Shutdown sit timed out or failed: %s", exc)
+
         try:
             await asyncio.wait_for(
                 self._hardware.set_leds(LEDS_OFF),

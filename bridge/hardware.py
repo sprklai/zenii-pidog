@@ -77,6 +77,13 @@ class HardwareInterface(ABC):
         """Set RGB LED strip mode/color/brightness."""
 
     @abstractmethod
+    async def sit_and_stop(self) -> None:
+        """Move to sitting position and stop all motion. Called on shutdown.
+
+        Bypasses the action queue — safe to call after loops are cancelled.
+        """
+
+    @abstractmethod
     async def close(self) -> None:
         """Release hardware resources."""
 
@@ -184,6 +191,23 @@ class RealHardware(HardwareInterface):
                 self._rgb.set_mode, style, (r, g, b), bps, brightness
             )
 
+    def _sit_and_stop_sync(self) -> None:
+        # Mirrors the official shutdown pattern from SunFounder examples:
+        #   my_dog.do_action('sit', speed=50)
+        #   my_dog.wait_all_done()
+        # Called directly — bypasses the action queue/lock so it's safe
+        # to invoke even after asyncio loops have been cancelled.
+        logger.info("Shutdown: moving PiDog to sit position ...")
+        try:
+            self._dog.do_action("sit", speed=50)
+            self._dog.wait_all_done()
+            logger.info("Shutdown: PiDog is sitting")
+        except Exception as exc:
+            logger.warning("Shutdown sit failed (continuing): %s", exc)
+
+    async def sit_and_stop(self) -> None:
+        await asyncio.to_thread(self._sit_and_stop_sync)
+
     async def close(self) -> None:
         try:
             await asyncio.to_thread(self._rgb.set_mode, "monochromatic", (0, 0, 0), 1, 0)
@@ -241,6 +265,9 @@ class SimulatedHardware(HardwareInterface):
             cmd.color,
             cmd.brightness,
         )
+
+    async def sit_and_stop(self) -> None:
+        logger.info("[SIM] Shutdown: PiDog sitting and stopping")
 
     async def close(self) -> None:
         logger.info("Simulated hardware closed")
