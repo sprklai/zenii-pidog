@@ -123,6 +123,8 @@ class LocalVoice(VoiceInterface):
             return
 
         async with self._speak_lock:
+            piper = None
+            aplay = None
             try:
                 piper = await asyncio.create_subprocess_exec(
                     self._config.tts_binary,
@@ -132,28 +134,48 @@ class LocalVoice(VoiceInterface):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                piper_out, _ = await asyncio.wait_for(
-                    piper.communicate(clean.encode("utf-8")),
-                    timeout=30.0,
+                aplay = await asyncio.create_subprocess_exec(
+                    "aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
                 )
+                # Feed text to piper
+                piper.stdin.write(clean.encode("utf-8"))
+                await piper.stdin.drain()
+                piper.stdin.close()
 
-                if piper_out:
-                    aplay = await asyncio.create_subprocess_exec(
-                        "aplay", "-r", "22050", "-f", "S16_LE", "-t", "raw", "-q",
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
+                # Stream audio chunks piper → aplay as they are generated.
+                # aplay starts playing after the first ~93ms chunk arrives,
+                # instead of waiting for the full synthesis to complete.
+                while True:
+                    chunk = await asyncio.wait_for(
+                        piper.stdout.read(4096), timeout=30.0
                     )
-                    await asyncio.wait_for(
-                        aplay.communicate(piper_out),
-                        timeout=30.0,
-                    )
+                    if not chunk:
+                        break
+                    aplay.stdin.write(chunk)
+                    await aplay.stdin.drain()
+
+                aplay.stdin.close()
+                await asyncio.gather(
+                    asyncio.wait_for(piper.wait(), timeout=5.0),
+                    asyncio.wait_for(aplay.wait(), timeout=30.0),
+                    return_exceptions=True,
+                )
             except asyncio.TimeoutError:
                 logger.warning("TTS timed out")
             except FileNotFoundError as exc:
                 logger.warning("TTS binary not found: %s", exc)
             except Exception as exc:
                 logger.warning("TTS failed: %s", exc)
+            finally:
+                for proc in (piper, aplay):
+                    if proc and proc.returncode is None:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
 
     async def close(self) -> None:
         pass

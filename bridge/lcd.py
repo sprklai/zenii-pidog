@@ -159,7 +159,7 @@ class LCDDisplay:
             return
 
         logger.debug("LCD scroll line %d (%d chars, delay=%.2fs): %r", line, len(text), delay, text)
-        padded = " " * 16 + text + " " * 16
+        padded = text + " " * 16   # no leading spaces — text visible from first frame
         for i in range(len(padded) - 15):
             self.show(line, padded[i : i + 16])
             if stop.wait(delay):
