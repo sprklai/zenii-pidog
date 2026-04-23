@@ -459,6 +459,9 @@ class PiDogZeniiBridge:
                     self._fire_and_forget(
                         asyncio.to_thread(self._lcd.show, 1, (">" + text)[:16].ljust(16))
                     )
+                    self._fire_and_forget(
+                        asyncio.to_thread(self._lcd.show, 2, "Thinking...     ")
+                    )
 
                 # Build prompt with sensor context
                 prompt = self._build_prompt(text)
