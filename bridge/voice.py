@@ -466,54 +466,60 @@ class CloudVoice(VoiceInterface):
 
                     async def _recv_transcript() -> str:
                         nonlocal transcript
-                        async for msg in ws:
-                            if msg.type != aiohttp.WSMsgType.TEXT:
-                                break
-                            data = _json.loads(msg.data)
-                            t = data.get("type", "")
+                        # Timeout is measured from speech START (SpeechStarted event),
+                        # not connection open — prevents the race where the user speaks
+                        # near the end of the window and speech_final arrives after cancel.
+                        async with asyncio.timeout(self._config.listen_timeout_secs) as deadline:
+                            async for msg in ws:
+                                if msg.type != aiohttp.WSMsgType.TEXT:
+                                    break
+                                data = _json.loads(msg.data)
+                                t = data.get("type", "")
 
-                            if t == "SpeechStarted":
-                                logger.info("MIC speech started")
-
-                            elif t == "Results":
-                                alts = (data.get("channel", {})
-                                        .get("alternatives", [{}]))
-                                text = alts[0].get("transcript", "").strip() if alts else ""
-                                is_final = data.get("is_final", False)
-                                speech_final = data.get("speech_final", False)
-
-                                if text:
-                                    logger.info(
-                                        "STT %s: %s",
-                                        "FINAL" if is_final else "interim",
-                                        text,
+                                if t == "SpeechStarted":
+                                    logger.info("MIC speech started")
+                                    deadline.reschedule(
+                                        asyncio.get_running_loop().time()
+                                        + self._config.listen_timeout_secs
                                     )
-                                if speech_final and text:
-                                    transcript = text
-                                    return transcript
 
-                            elif t == "UtteranceEnd":
-                                if transcript:
-                                    return transcript
+                                elif t == "Results":
+                                    alts = (data.get("channel", {})
+                                            .get("alternatives", [{}]))
+                                    text = alts[0].get("transcript", "").strip() if alts else ""
+                                    is_final = data.get("is_final", False)
+                                    speech_final = data.get("speech_final", False)
 
-                            elif t == "Error":
-                                msg_text = data.get("message", "")
-                                logger.error("Deepgram error: %s", msg_text)
-                                if data.get("variant") in ("TOKEN_LIMIT_REACHED", "INVALID_AUTH"):
-                                    self._stt_fault_count += 1
-                                    if self._stt_fault_count >= self._STT_FAULT_LIMIT:
-                                        raise _SttConfigError(
-                                            f"Deepgram auth/quota error: {msg_text}"
+                                    if text:
+                                        logger.info(
+                                            "STT %s: %s",
+                                            "FINAL" if is_final else "interim",
+                                            text,
                                         )
-                                break
+                                    if is_final and text:
+                                        transcript = text  # accumulate for UtteranceEnd fallback
+                                    if speech_final and text:
+                                        return transcript
+
+                                elif t == "UtteranceEnd":
+                                    if transcript:
+                                        return transcript
+
+                                elif t == "Error":
+                                    msg_text = data.get("message", "")
+                                    logger.error("Deepgram error: %s", msg_text)
+                                    if data.get("variant") in ("TOKEN_LIMIT_REACHED", "INVALID_AUTH"):
+                                        self._stt_fault_count += 1
+                                        if self._stt_fault_count >= self._STT_FAULT_LIMIT:
+                                            raise _SttConfigError(
+                                                f"Deepgram auth/quota error: {msg_text}"
+                                            )
+                                    break
                         return transcript
 
                     send_task = asyncio.create_task(_send_audio())
                     try:
-                        await asyncio.wait_for(
-                            _recv_transcript(),
-                            timeout=self._config.listen_timeout_secs,
-                        )
+                        await _recv_transcript()  # timeout managed internally
                     except asyncio.TimeoutError:
                         pass  # no speech in timeout window — normal, return None
                     finally:
