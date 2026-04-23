@@ -574,6 +574,19 @@ class CloudVoice(VoiceInterface):
 
         except _SttConfigError:
             raise
+        except aiohttp.WSServerHandshakeError as exc:
+            status = getattr(exc, "status", None) or 0
+            if 400 <= status < 500:
+                self._stt_fault_count += 1
+                if self._stt_fault_count >= self._STT_FAULT_LIMIT:
+                    model = self._config.pipecat_stt_model or "nova-2"
+                    raise _SttConfigError(
+                        f"Deepgram WebSocket rejected (HTTP {status}) — "
+                        f"check stt_api_key and stt_model (currently '{model}') "
+                        "in bridge_config.toml"
+                    )
+            logger.warning("Deepgram streaming failed: %s", exc)
+            return None
         except Exception as exc:
             logger.warning("Deepgram streaming failed: %s", exc)
             return None
