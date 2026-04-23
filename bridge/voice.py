@@ -93,31 +93,67 @@ class LocalVoice(VoiceInterface):
         logger.info("LocalVoice ready (Vosk STT + piper TTS)")
 
     def _listen_sync(self) -> str | None:
-        """Record from microphone and run Vosk recognition (blocking)."""
+        """Record from microphone using energy VAD, then run Vosk recognition.
+
+        Stops recording ~1.2s after speech ends instead of waiting out the full
+        listen_timeout_secs window — saves 3-4s latency for short commands.
+        """
         import json as _json
+        import numpy as np
 
         if self._stop.is_set():
             return None
 
         self._recognizer.Reset()
-        frames = int(self._sample_rate * self._config.listen_timeout_secs)
+        chunk_ms = 80
+        chunk_frames = int(self._sample_rate * chunk_ms / 1000)
+        rms_threshold = max(300, int(self._config.silence_threshold * 32767 * 0.5))
+        wait_limit = int(self._config.listen_timeout_secs * 1000 / chunk_ms)
+        silence_end_chunks = int(1200 / chunk_ms)  # 1.2s of silence ends utterance
+
+        frames: list[bytes] = []
+        speech_started = False
+        silence_count = 0
+        wait_count = 0
+
+        logger.info("MIC listening (Vosk VAD), speak now...")
 
         try:
-            audio = self._sd.rec(
-                frames,
+            with self._sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=1,
                 dtype="int16",
-                blocking=True,
-            )
+                blocksize=chunk_frames,
+            ) as stream:
+                while not self._stop.is_set():
+                    chunk, _ = stream.read(chunk_frames)
+                    rms = int(np.sqrt(np.mean(chunk.astype("float32") ** 2)))
+
+                    if not speech_started:
+                        wait_count += 1
+                        if rms > rms_threshold:
+                            logger.info("MIC speech detected (RMS=%d)", rms)
+                            speech_started = True
+                            frames.append(chunk.tobytes())
+                            silence_count = 0
+                        elif wait_count >= wait_limit:
+                            return None  # timeout — no speech
+                    else:
+                        frames.append(chunk.tobytes())
+                        if rms < rms_threshold:
+                            silence_count += 1
+                            if silence_count >= silence_end_chunks:
+                                break  # speech ended
+                        else:
+                            silence_count = 0
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
             return None
 
-        if self._stop.is_set():
+        if not frames:
             return None
 
-        self._recognizer.AcceptWaveform(audio.tobytes())
+        self._recognizer.AcceptWaveform(b"".join(frames))
         result = _json.loads(self._recognizer.FinalResult())
         text = result.get("text", "").strip()
         return text if text else None
@@ -424,9 +460,9 @@ class CloudVoice(VoiceInterface):
             "encoding=linear16",
             f"sample_rate={sample_rate}",
             "channels=1",
-            "endpointing=400",       # ms silence before utterance end
-            "utterance_end_ms=1000", # ms after last word to send UtteranceEnd
-            "vad_events=true",       # get SpeechStarted events
+            f"endpointing={self._config.deepgram_endpointing_ms}",
+            f"utterance_end_ms={self._config.deepgram_utterance_end_ms}",
+            "vad_events=true",
             "smart_format=true",
             "interim_results=true",
         ])
@@ -497,7 +533,9 @@ class CloudVoice(VoiceInterface):
                                             text,
                                         )
                                     if is_final and text:
-                                        transcript = text  # accumulate for UtteranceEnd fallback
+                                        # Accumulate: multi-sentence commands produce multiple
+                                        # is_final results before speech_final arrives.
+                                        transcript = (transcript + " " + text).strip() if transcript else text
                                     if speech_final and text:
                                         return transcript
 
@@ -636,8 +674,12 @@ class CloudVoice(VoiceInterface):
             provider = self._config.pipecat_tts_provider.lower()
             try:
                 if provider == "cartesia":
-                    audio_bytes = await self._tts_cartesia(clean)
-                elif provider == "elevenlabs":
+                    # Streaming path: first audio chunk starts playing ~50-100ms
+                    # after the request is sent instead of waiting for full download.
+                    await self._tts_cartesia_streaming(clean)
+                    return
+
+                if provider == "elevenlabs":
                     audio_bytes = await self._tts_elevenlabs(clean)
                 elif provider == "azure":
                     audio_bytes = await self._tts_azure(clean)
@@ -656,6 +698,89 @@ class CloudVoice(VoiceInterface):
                 logger.warning("Cloud TTS timed out")
             except Exception as exc:
                 logger.warning("Cloud TTS failed: %s", exc)
+
+    async def _tts_cartesia_streaming(self, text: str) -> None:
+        """Stream Cartesia TTS via SSE, piping audio chunks to sd.OutputStream.
+
+        First audio starts playing ~50-100ms after the request is sent.
+        Falls back to the batch bytes endpoint on any stream error.
+        """
+        import base64
+        import queue as _q
+        import numpy as np
+        import sounddevice as sd
+
+        body = {
+            "transcript": text,
+            "model_id": self._config.pipecat_tts_model or "sonic-english",
+            "voice": {
+                "mode": "id",
+                "id": self._config.pipecat_tts_voice or "a0e99841-438c-4a64-b679-ae501e7d6091",
+            },
+            "output_format": {
+                "container": "raw",
+                "encoding": "pcm_s16le",
+                "sample_rate": _TTS_SAMPLE_RATE,
+            },
+        }
+        headers = {
+            "X-API-Key": self._config.pipecat_tts_api_key,
+            "Cartesia-Version": "2024-06-10",
+            "Content-Type": "application/json",
+        }
+
+        # Thread-safe queue bridges async SSE reader and sync sd.OutputStream writer.
+        audio_q: _q.SimpleQueue[bytes | None] = _q.SimpleQueue()
+
+        def _play_stream() -> None:
+            with sd.OutputStream(
+                samplerate=_TTS_SAMPLE_RATE, channels=1, dtype="int16"
+            ) as stream:
+                while True:
+                    chunk = audio_q.get()
+                    if chunk is None:
+                        break
+                    stream.write(np.frombuffer(chunk, dtype="int16"))
+
+        loop = asyncio.get_running_loop()
+        play_future = loop.run_in_executor(self._executor, _play_stream)
+
+        try:
+            async with self._get_http().post(
+                "https://api.cartesia.ai/tts/sse",
+                json=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                resp.raise_for_status()
+                async for raw_line in resp.content:
+                    line = raw_line.decode(errors="ignore").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if not payload:
+                        continue
+                    try:
+                        data = _json.loads(payload)
+                    except Exception:
+                        continue
+                    if data.get("done"):
+                        break
+                    audio_b64 = data.get("data")
+                    if audio_b64:
+                        audio_q.put(base64.b64decode(audio_b64))
+        except Exception as exc:
+            logger.warning("Cartesia SSE stream error: %s — falling back to bytes endpoint", exc)
+            # Drain the play worker before retrying with batch
+            audio_q.put(None)
+            await play_future
+            audio_bytes = await self._tts_cartesia(text)
+            if audio_bytes:
+                await loop.run_in_executor(self._executor, self._play_audio_sync, audio_bytes)
+            return
+        finally:
+            audio_q.put(None)   # signal end of stream to play worker
+            await play_future   # wait for all queued audio to finish playing
 
     async def _tts_cartesia(self, text: str) -> bytes | None:
         """POST to Cartesia TTS bytes endpoint → raw PCM s16le at 22050Hz."""

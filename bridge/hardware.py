@@ -125,7 +125,11 @@ class RealHardware(HardwareInterface):
         _time.sleep(0.2)
         gc.collect()
         self._rgb = self._dog.rgb_strip
-        self._action_lock = asyncio.Lock()
+        # Separate locks: servos and LEDs are independent hardware subsystems.
+        # Using one lock blocked LED updates for the full duration of slow servo
+        # actions (up to action_timeout_secs=10s).
+        self._servo_lock = asyncio.Lock()
+        self._led_lock = asyncio.Lock()
         logger.info("PiDog2 hardware initialized")
 
     def _read_imu_sync(self) -> tuple[float, float, float]:
@@ -167,7 +171,7 @@ class RealHardware(HardwareInterface):
         self._dog.wait_all_done()
 
     async def execute_action(self, action: PiDogAction) -> None:
-        async with self._action_lock:
+        async with self._servo_lock:
             await asyncio.to_thread(self._execute_action_sync, action)
 
     # Maps user-facing LED mode names to pidog RGBStrip style names.
@@ -186,7 +190,7 @@ class RealHardware(HardwareInterface):
         style = self._LED_MODE_MAP.get(cmd.mode, "monochromatic")
         brightness = max(0.0, min(1.0, cmd.brightness / 100.0))
         bps = 1.0
-        async with self._action_lock:
+        async with self._led_lock:
             await asyncio.to_thread(
                 self._rgb.set_mode, style, [r, g, b], bps, brightness
             )

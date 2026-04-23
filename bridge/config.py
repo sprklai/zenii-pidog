@@ -91,6 +91,11 @@ class BridgeConfig:
     pipecat_tts_model: str = ""
     pipecat_tts_voice: str = ""
     pipecat_sample_rate: int = 16000
+    # Deepgram endpointing: ms of silence before utterance-end is declared.
+    # Lower = faster response but more risk of cutting off slow speakers.
+    # Old hardcoded values were 400/1000; 300/800 reduces end-of-speech latency ~400ms.
+    deepgram_endpointing_ms: int = 300
+    deepgram_utterance_end_ms: int = 800
 
     # Sensor loop
     sensor_interval_secs: float = 2.0
@@ -113,6 +118,10 @@ class BridgeConfig:
     ws_reconnect_delay_secs: float = 2.0
     ws_max_reconnect_delay_secs: float = 60.0
     health_check_interval_secs: float = 10.0
+
+    # Post-speech pause before mic reopens (prevents TTS echo pickup).
+    # Reduce toward 0.2 in a well-isolated acoustic environment.
+    echo_prevention_secs: float = 0.5
 
     # LCD1602 display (optional — requires python3-smbus + I2C wiring)
     lcd_enabled: bool = False
@@ -187,6 +196,12 @@ class BridgeConfig:
         cfg.pipecat_sample_rate = _env_int(
             "PIPECAT_SAMPLE_RATE", cfg.pipecat_sample_rate
         )
+        cfg.deepgram_endpointing_ms = _env_int(
+            "DEEPGRAM_ENDPOINTING_MS", cfg.deepgram_endpointing_ms
+        )
+        cfg.deepgram_utterance_end_ms = _env_int(
+            "DEEPGRAM_UTTERANCE_END_MS", cfg.deepgram_utterance_end_ms
+        )
 
         # Sensor settings
         cfg.sensor_interval_secs = _env_float(
@@ -234,6 +249,10 @@ class BridgeConfig:
             "PIDOG_HEALTH_CHECK_INTERVAL", cfg.health_check_interval_secs
         )
 
+        cfg.echo_prevention_secs = _env_float(
+            "PIDOG_ECHO_PREVENTION_SECS", cfg.echo_prevention_secs
+        )
+
         # LCD display
         cfg.lcd_enabled = _env_bool("PIDOG_LCD_ENABLED", cfg.lcd_enabled)
         cfg.lcd_i2c_address = _env_int("PIDOG_LCD_ADDRESS", cfg.lcd_i2c_address)
@@ -279,6 +298,7 @@ class BridgeConfig:
             "ws_reconnect_delay_secs", "ws_max_reconnect_delay_secs",
             "health_check_interval_secs",
             "lcd_enabled", "lcd_i2c_address", "lcd_i2c_bus", "lcd_scroll_delay_secs",
+            "echo_prevention_secs",
         ]
         for key in simple_keys:
             if key in data:
@@ -311,6 +331,8 @@ class BridgeConfig:
             "tts_model": "pipecat_tts_model",
             "tts_voice": "pipecat_tts_voice",
             "sample_rate": "pipecat_sample_rate",
+            "deepgram_endpointing_ms": "deepgram_endpointing_ms",
+            "deepgram_utterance_end_ms": "deepgram_utterance_end_ms",
         }
         for toml_key, attr in pipecat_map.items():
             if toml_key in pipecat:

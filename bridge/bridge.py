@@ -356,8 +356,10 @@ class PiDogZeniiBridge:
 
         self._stop_lcd_listening()  # cancels dots + sensor rotation tasks
 
-        # Cancel background tasks
-        for task in self._bg_tasks:
+        # Cancel background tasks — snapshot first: done_callback (discard) fires
+        # synchronously inside task.cancel() for already-finished tasks, which
+        # would mutate the set mid-iteration and raise RuntimeError.
+        for task in list(self._bg_tasks):
             task.cancel()
         if self._bg_tasks:
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
@@ -431,7 +433,7 @@ class PiDogZeniiBridge:
         try:
             self._action_queue.put_nowait(item)
         except asyncio.QueueFull:
-            logger.debug("Action queue full, dropping: %s", item)
+            logger.warning("Action queue full, dropping: %s", item)
 
     def _fire_and_forget(self, coro) -> None:
         """Spawn a background task with lifecycle tracking."""
@@ -503,8 +505,11 @@ class PiDogZeniiBridge:
             await asyncio.sleep(duration)
         except asyncio.CancelledError:
             return
+        # Only create a new dots task if _start_lcd_listening() hasn't already created
+        # one during our sleep — otherwise we'd leak a second animation coroutine.
         if self._lcd_listening_active and not self._shutdown_event.is_set():
-            self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
+            if self._lcd_dots_task is None or self._lcd_dots_task.done():
+                self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
 
     # -- Voice Loop --
 
@@ -593,9 +598,7 @@ class PiDogZeniiBridge:
                     continue
 
                 if spoke:
-                    # Brief pause: lets the speaker finish reverberating before
-                    # the mic opens again — prevents TTS echo pickup.
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(self._config.echo_prevention_secs)
                 else:
                     logger.warning("LLM returned no text")
 
@@ -660,8 +663,8 @@ class PiDogZeniiBridge:
                first sentence arrives (~0.8s) → TTS starts
                remaining sentences yield as LLM streams
         """
-        await self._client.ws_ensure_connected()
         logger.info(">>> WS: %s", prompt[:120])
+        # ws_send_prompt handles reconnect internally under _ws_lock — no pre-call needed.
         await self._client.ws_send_prompt(prompt, self._session_id)
 
         raw_buf = ""        # raw LLM output (may contain partial action tags)
@@ -730,6 +733,18 @@ class PiDogZeniiBridge:
                         break
                     sentence = text_buf[: m.start() + 1].strip()
                     text_buf = text_buf[m.end():]
+                    if sentence:
+                        yield sentence
+
+                # Fallback: if the buffer has grown large with no sentence boundary
+                # (e.g., LLM emitting a long unpunctuated phrase), split at the
+                # nearest clause boundary so TTS can start instead of waiting for
+                # the full response.
+                if len(text_buf) > 120:
+                    m2 = re.search(r",\s+", text_buf)
+                    split_at = m2.end() if m2 else len(text_buf)
+                    sentence = text_buf[:split_at].strip()
+                    text_buf = text_buf[split_at:]
                     if sentence:
                         yield sentence
 
