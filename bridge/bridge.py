@@ -23,6 +23,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncIterator
 
+import aiohttp
+
 from .action_parser import (
     ACTION_MAP,
     LEDCommand,
@@ -342,6 +344,12 @@ class PiDogZeniiBridge:
                 timeout=5.0,
             )
             logger.info("PiDog soul uploaded to /identity/SOUL.md (hash=%s)", soul_hash)
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 404:
+                # /identity/ endpoint not available on this daemon version — skip silently.
+                logger.debug("Soul upload skipped: /identity/ not supported by this daemon")
+            else:
+                logger.warning("Failed to upload soul to /identity/SOUL.md: %s", exc)
         except Exception as exc:
             logger.warning("Failed to upload soul to /identity/SOUL.md: %s", exc)
 
@@ -608,6 +616,14 @@ class PiDogZeniiBridge:
 
             except asyncio.CancelledError:
                 raise
+            except RuntimeError as exc:
+                # RuntimeError from voice.py means the STT circuit breaker tripped
+                # (repeated 4xx from the cloud provider).  This is a configuration
+                # problem the operator must fix — stop the bridge rather than loop.
+                logger.error("Fatal STT error — stopping bridge: %s", exc)
+                logger.error("Fix stt_api_key / stt_model in bridge_config.toml and restart")
+                self.request_shutdown()
+                return
             except ConnectionError as exc:
                 logger.warning("WS connection lost: %s", exc)
                 self._enqueue_action(LEDS_ALERT)

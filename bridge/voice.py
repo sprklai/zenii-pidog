@@ -585,6 +585,9 @@ class CloudVoice(VoiceInterface):
                         f"check stt_api_key and stt_model (currently '{model}') "
                         "in bridge_config.toml"
                     )
+                # Back off before the next retry so we don't flood logs while
+                # the circuit breaker is counting up to _STT_FAULT_LIMIT.
+                await asyncio.sleep(min(self._stt_fault_count * 2.0, 10.0))
             logger.warning("Deepgram streaming failed: %s", exc)
             return None
         except Exception as exc:
