@@ -8,9 +8,11 @@
 #   bash restart_bridge.sh --no-pull       # skip git pull
 #
 # Environment:
-#   PIDOG_CONFIG   Path to bridge_config.toml
-#                  (default: /home/<user>/pidog-zenii/bridge_config.toml)
-#   SERVICE_NAME   systemd unit name (default: zenii-pidog)
+#   PIDOG_CONFIG          Path to bridge_config.toml
+#                         (default: /home/<user>/pidog-zenii/bridge_config.toml)
+#   SERVICE_NAME          systemd unit for the bridge (default: pidog-bridge)
+#   DAEMON_SERVICE_NAME   systemd unit for the Zenii daemon (default: zenii-pidog)
+#   ZENII_URL             Zenii daemon URL (default: http://127.0.0.1:18981)
 # =============================================================================
 set -euo pipefail
 
@@ -39,7 +41,11 @@ for arg in "$@"; do
     esac
 done
 
-SERVICE_NAME="${SERVICE_NAME:-zenii-pidog}"
+# SERVICE_NAME  — systemd unit for the *bridge* (python3 -m bridge)
+# DAEMON_SERVICE_NAME — systemd unit for the Zenii AI daemon (zenii-daemon binary)
+# These are intentionally separate: the daemon must stay running while the bridge restarts.
+SERVICE_NAME="${SERVICE_NAME:-pidog-bridge}"
+DAEMON_SERVICE_NAME="${DAEMON_SERVICE_NAME:-zenii-pidog}"
 
 # Default config path: same convention as the bridge — sibling dir named pidog-zenii
 DEFAULT_CONFIG="/home/${USER}/pidog-zenii/bridge_config.toml"
@@ -87,8 +93,11 @@ info "Checking for processes holding GPIO..."
 
 GPIO_FREED=false
 
-# Stop systemd service if active
+# Stop bridge systemd services only — do NOT touch DAEMON_SERVICE_NAME (zenii-pidog),
+# which is the Zenii AI daemon that the bridge connects to.
 for svc in "${SERVICE_NAME}" pidog-bridge pidog; do
+    # Never stop the Zenii daemon — that would break the bridge's connection target.
+    [[ "${svc}" == "${DAEMON_SERVICE_NAME}" ]] && continue
     if systemctl is-active --quiet "${svc}" 2>/dev/null; then
         info "Stopping ${svc}.service ..."
         sudo systemctl stop "${svc}"
@@ -115,6 +124,42 @@ if [[ "${GPIO_FREED}" = true ]]; then
     info "Waiting for GPIO to be released by kernel..."
     sleep 1
     ok "GPIO ready"
+fi
+
+# =============================================================================
+# 2b. Ensure Zenii daemon is running and healthy
+# =============================================================================
+ZENII_URL="${ZENII_URL:-http://127.0.0.1:18981}"
+
+_daemon_healthy() {
+    curl -sf --max-time 3 "${ZENII_URL}/health" &>/dev/null
+}
+
+if _daemon_healthy; then
+    ok "Zenii daemon already healthy at ${ZENII_URL}"
+else
+    info "Zenii daemon not responding — starting ${DAEMON_SERVICE_NAME}.service ..."
+    if systemctl list-unit-files --quiet "${DAEMON_SERVICE_NAME}.service" &>/dev/null; then
+        sudo systemctl start "${DAEMON_SERVICE_NAME}"
+        ok "Started ${DAEMON_SERVICE_NAME}.service"
+    else
+        warn "${DAEMON_SERVICE_NAME}.service not found — start the daemon manually"
+        warn "  e.g.: zenii-daemon --config ~/.config/zenii/config.toml &"
+    fi
+
+    info "Waiting for Zenii daemon to become healthy ..."
+    DAEMON_WAIT=0
+    DAEMON_TIMEOUT=30
+    until _daemon_healthy || [[ "${DAEMON_WAIT}" -ge "${DAEMON_TIMEOUT}" ]]; do
+        sleep 2
+        DAEMON_WAIT=$(( DAEMON_WAIT + 2 ))
+    done
+
+    if _daemon_healthy; then
+        ok "Zenii daemon is healthy"
+    else
+        die "Zenii daemon did not become healthy after ${DAEMON_TIMEOUT}s — check: journalctl -u ${DAEMON_SERVICE_NAME} -n 40"
+    fi
 fi
 
 # =============================================================================
