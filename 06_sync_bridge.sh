@@ -91,7 +91,7 @@ ssh "${REMOTE}" "mkdir -p '${REMOTE_BRIDGE}'"
 # =============================================================================
 info "Computing local file hashes..."
 declare -A LOCAL_SHA
-BRIDGE_FILES="__init__.py __main__.py config.py zenii_client.py hardware.py voice.py action_parser.py bridge.py requirements.txt"
+BRIDGE_FILES="__init__.py __main__.py config.py zenii_client.py hardware.py voice.py action_parser.py bridge.py requirements.txt lcd.py"
 for f in ${BRIDGE_FILES}; do
     if [[ -f "${LOCAL_BRIDGE}/${f}" ]]; then
         LOCAL_SHA["${f}"]=$(sha256sum "${LOCAL_BRIDGE}/${f}" | cut -c1-8)
@@ -147,6 +147,14 @@ rsync -az --checksum \
     "${REMOTE}:${REMOTE_BRIDGE}/"
 
 ok "Bridge files synced to ${REMOTE}:${REMOTE_BRIDGE}"
+
+# Also sync the on-Pi helper scripts (fix_gpio.sh + restart_bridge.sh)
+# These live in the repo root and are useful to have up to date on the Pi.
+for helper in fix_gpio.sh restart_bridge.sh; do
+    if [[ -f "${SCRIPT_DIR}/${helper}" ]]; then
+        rsync -az --checksum "${SCRIPT_DIR}/${helper}" "${REMOTE}:/home/${REMOTE_USER}/zenii-pidog/${helper}" 2>/dev/null || true
+    fi
+done
 
 # =============================================================================
 # Optionally restart the systemd service

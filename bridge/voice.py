@@ -27,6 +27,8 @@ import shutil
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 
+import threading
+
 import aiohttp
 
 from .config import BridgeConfig
@@ -86,12 +88,16 @@ class LocalVoice(VoiceInterface):
         self._recognizer = KaldiRecognizer(self._model, self._sample_rate)
         self._sd = sd
         self._speak_lock = asyncio.Lock()
+        self._stop = threading.Event()
 
         logger.info("LocalVoice ready (Vosk STT + piper TTS)")
 
     def _listen_sync(self) -> str | None:
         """Record from microphone and run Vosk recognition (blocking)."""
         import json as _json
+
+        if self._stop.is_set():
+            return None
 
         self._recognizer.Reset()
         frames = int(self._sample_rate * self._config.listen_timeout_secs)
@@ -106,6 +112,9 @@ class LocalVoice(VoiceInterface):
             )
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
+            return None
+
+        if self._stop.is_set():
             return None
 
         self._recognizer.AcceptWaveform(audio.tobytes())
@@ -178,7 +187,11 @@ class LocalVoice(VoiceInterface):
                             pass
 
     async def close(self) -> None:
-        pass
+        self._stop.set()
+        try:
+            self._sd.stop()  # unblocks any in-progress sd.rec() immediately
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +224,7 @@ class CloudVoice(VoiceInterface):
         self._speak_lock = asyncio.Lock()
         self._http: aiohttp.ClientSession | None = None
         self._stt_fault_count = 0  # consecutive 4xx counter
+        self._stop = threading.Event()
 
         if not config.pipecat_stt_api_key:
             raise RuntimeError(
@@ -302,7 +316,7 @@ class CloudVoice(VoiceInterface):
                 blocksize=chunk_frames,
                 device=device,
             ) as stream:
-                while True:
+                while not self._stop.is_set():
                     chunk, _ = stream.read(chunk_frames)
                     rms = int(np.sqrt(np.mean(chunk.astype("float32") ** 2)))
 
@@ -743,6 +757,7 @@ class CloudVoice(VoiceInterface):
             logger.warning("Audio playback failed: %s", exc)
 
     async def close(self) -> None:
+        self._stop.set()
         if self._http and not self._http.closed:
             await self._http.close()
             self._http = None

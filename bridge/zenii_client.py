@@ -76,10 +76,19 @@ class ZeniiClient:
     async def store_memory(
         self, key: str, content: str, category: str = "core"
     ) -> None:
-        """POST /memory."""
+        """POST /memory — creates new entry (use update_memory for upserts)."""
         session = self._ensure_session()
         payload = {"key": key, "content": content, "category": category}
         async with session.post("/memory", json=payload) as resp:
+            resp.raise_for_status()
+
+    async def update_memory(
+        self, key: str, content: str, category: str = "core"
+    ) -> None:
+        """PUT /memory/{key} — upsert by key, no duplicate entries."""
+        session = self._ensure_session()
+        payload = {"content": content, "category": category}
+        async with session.put(f"/memory/{key}", json=payload) as resp:
             resp.raise_for_status()
 
     async def recall_memory(
@@ -89,6 +98,13 @@ class ZeniiClient:
         session = self._ensure_session()
         params = {"q": query, "limit": str(limit), "offset": str(offset)}
         async with session.get("/memory", params=params) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    async def get_sessions(self) -> list[dict]:
+        """GET /sessions."""
+        session = self._ensure_session()
+        async with session.get("/sessions") as resp:
             resp.raise_for_status()
             return await resp.json()
 
@@ -105,6 +121,16 @@ class ZeniiClient:
         async with session.post("/chat", json=payload) as resp:
             resp.raise_for_status()
             return await resp.json()
+
+    async def get_identity(self, name: str) -> str | None:
+        """GET /identity/{name} -> content string, or None if not found."""
+        session = self._ensure_session()
+        async with session.get(f"/identity/{name}") as resp:
+            if resp.status == 404:
+                return None
+            resp.raise_for_status()
+            data = await resp.json()
+            return data.get("content")
 
     async def update_identity(self, name: str, content: str) -> None:
         """PUT /identity/{name}."""
@@ -168,24 +194,16 @@ class ZeniiClient:
         logger.info("WebSocket connected")
 
     async def ws_ensure_connected(self) -> None:
-        """Reconnect if WebSocket is closed. Exponential backoff with jitter."""
+        """Reconnect if WebSocket is closed. Exponential backoff with jitter.
+
+        Attempts connection directly without a health pre-check — the connect
+        failure itself tells us the daemon is unavailable. This saves one RTT
+        on every reconnect vs the old health-check-then-connect pattern.
+        """
         if self._ws and not self._ws.closed:
             return
 
         while True:
-            # Check daemon health first
-            if not await self.health_check():
-                logger.warning(
-                    "Daemon not healthy, waiting %.1fs before retry",
-                    self._reconnect_delay,
-                )
-                await asyncio.sleep(self._reconnect_delay)
-                self._reconnect_delay = min(
-                    self._reconnect_delay * 2,
-                    self._config.ws_max_reconnect_delay_secs,
-                )
-                continue
-
             try:
                 await self.ws_connect()
                 return

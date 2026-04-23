@@ -14,12 +14,24 @@ All async operations have timeouts to prevent hanging.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import AsyncIterator
 
-from .action_parser import LEDCommand, PiDogAction, parse_response
+from .action_parser import (
+    ACTION_MAP,
+    LEDCommand,
+    PiDogAction,
+    VALID_ACTIONS,
+    VALID_LED_MODES,
+    _ACTION_ALIASES,
+    parse_response,
+)
 from .config import BridgeConfig
 from .hardware import HardwareInterface, SensorReading, create_hardware
 from .lcd import LCDDisplay
@@ -27,6 +39,14 @@ from .voice import VoiceInterface, create_voice
 from .zenii_client import ZeniiClient
 
 logger = logging.getLogger(__name__)
+
+# Matches a complete <pidog_action> or <pidog_leds> tag — used for streaming dispatch.
+_STREAM_TAG_RE = re.compile(
+    r"<pidog_(action|leds)>(.*?)</pidog_(?:action|leds)>",
+    re.DOTALL,
+)
+# Matches a sentence boundary (period/!/? followed by whitespace) for streaming TTS.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s")
 
 PIDOG_SOUL = """\
 You are Zenii, a friendly and playful robot dog powered by a Raspberry Pi and PiDog2 hardware.
@@ -151,29 +171,33 @@ class PiDogZeniiBridge:
     # -- Lifecycle --
 
     async def start(self) -> None:
-        """Full lifecycle: wait for daemon, create session, run loops."""
+        """Full lifecycle: wait for daemon, parallel setup, run loops."""
         await self._client.start()
 
         logger.info("Waiting for Zenii daemon at %s ...", self._config.zenii_url)
         await self._wait_for_daemon()
-        logger.info("Daemon is healthy")
+        logger.info("Daemon is healthy — running parallel setup")
 
-        self._session_id = await asyncio.wait_for(
-            self._client.create_session(self._config.session_title),
-            timeout=15.0,
+        # All four are independent HTTP/WS calls — run in parallel to minimize
+        # startup latency (saves 2-4 sequential round-trips vs sequential calls).
+        results = await asyncio.gather(
+            self._resolve_session(),
+            asyncio.wait_for(self._client.ws_connect(), timeout=10.0),
+            self._configure_ai_provider(),
+            self._ensure_soul(),
+            return_exceptions=True,
         )
-        logger.info("Session created: %s", self._session_id)
 
-        await asyncio.wait_for(self._client.ws_connect(), timeout=10.0)
+        session_result = results[0]
+        if isinstance(session_result, BaseException):
+            raise session_result
+        self._session_id = session_result
 
-        # Configure AI provider in Zenii if specified in bridge_config.toml
-        await self._configure_ai_provider()
-
-        # Push the PiDog personality/soul so the AI knows to emit action tags
-        await self._push_soul()
-
-        # Quick LLM smoke test — confirms AI is reachable before entering loops
-        await self._llm_smoke_test()
+        for label, result in zip(
+            ("ws_connect", "configure_ai", "ensure_soul"), results[1:]
+        ):
+            if isinstance(result, Exception):
+                logger.warning("Startup step %s failed: %s", label, result)
 
         # Set idle mood
         self._enqueue_action(LEDS_IDLE)
@@ -199,6 +223,48 @@ class PiDogZeniiBridge:
             logger.info("Bridge loops cancelled")
         finally:
             await self._shutdown()
+
+    async def _resolve_session(self) -> str:
+        """Resume the last session from Zenii memory, or create a new one.
+
+        Session continuity means the AI remembers previous conversations across
+        bridge restarts — no need to re-establish context each time.
+        """
+        try:
+            results = await asyncio.wait_for(
+                self._client.recall_memory("pidog:session:latest", limit=1),
+                timeout=5.0,
+            )
+            if results:
+                data = json.loads(results[0].get("content", "{}"))
+                sid = data.get("session_id")
+                if sid:
+                    sessions = await asyncio.wait_for(
+                        self._client.get_sessions(), timeout=5.0
+                    )
+                    if any(s.get("id") == sid for s in sessions):
+                        logger.info("Resuming session: %s", sid)
+                        return sid
+        except Exception as exc:
+            logger.debug("Session resume check failed: %s", exc)
+
+        session_id = await asyncio.wait_for(
+            self._client.create_session(self._config.session_title),
+            timeout=15.0,
+        )
+        try:
+            await asyncio.wait_for(
+                self._client.update_memory(
+                    "pidog:session:latest",
+                    json.dumps({"session_id": session_id}),
+                    category="core",
+                ),
+                timeout=5.0,
+            )
+        except Exception:
+            pass
+        logger.info("New session: %s", session_id)
+        return session_id
 
     async def _wait_for_daemon(self) -> None:
         """Poll GET /health until daemon responds. Exponential backoff."""
@@ -246,42 +312,38 @@ class PiDogZeniiBridge:
         except Exception as exc:
             logger.warning("Failed to configure AI provider: %s", exc)
 
-    async def _push_soul(self) -> None:
-        """Establish PiDog personality by sending the soul as the first WS message.
+    async def _ensure_soul(self) -> None:
+        """Upload PIDOG_SOUL to Zenii's persistent /identity/SOUL.md.
 
-        The /identity endpoint is not available in all Zenii versions, so we seed
-        the session context directly via the chat WebSocket instead.
+        Zenii auto-injects identity files into every session as a system prompt,
+        so the soul persists across restarts without any LLM round-trip.
+        Only writes when the content has changed (hash check), so subsequent
+        startups are instant.
         """
-        init_prompt = (
-            f"{PIDOG_SOUL}\n\n"
-            "Confirm you understand your role and will always embed <pidog_action> tags "
-            "when the user asks you to do something physical. Reply only with: Understood."
-        )
+        soul_hash = hashlib.sha256(PIDOG_SOUL.encode()).hexdigest()[:16]
         try:
-            reply = await asyncio.wait_for(
-                self._ws_chat(init_prompt),
-                timeout=20.0,
+            current = await asyncio.wait_for(
+                self._client.get_identity("SOUL.md"),
+                timeout=5.0,
             )
-            logger.info("PiDog soul established — AI: %s", (reply or "").strip()[:80])
-        except Exception as exc:
-            logger.warning("Failed to establish soul: %s", exc)
+            # Embed the hash as a comment in the stored content so we can detect
+            # stale uploads without a full string compare.
+            if current and f"soul_hash:{soul_hash}" in current:
+                logger.info("PiDog soul already current (hash=%s) — skipping upload", soul_hash)
+                return
 
-    async def _llm_smoke_test(self) -> None:
-        """Send a single test message to confirm the LLM is reachable and responding."""
-        logger.info("LLM smoke test: sending 'Reply with OK only'...")
-        try:
-            reply = await asyncio.wait_for(
-                self._ws_chat("Reply with the single word OK and nothing else."),
-                timeout=15.0,
+            content = f"<!-- soul_hash:{soul_hash} -->\n{PIDOG_SOUL}"
+            await asyncio.wait_for(
+                self._client.update_identity("SOUL.md", content),
+                timeout=5.0,
             )
-            if reply:
-                logger.info("LLM smoke test PASSED — reply: %s", reply.strip()[:80])
-            else:
-                logger.warning("LLM smoke test got empty reply — check AI provider config")
-        except asyncio.TimeoutError:
-            logger.warning("LLM smoke test TIMED OUT — AI may not be responding")
+            await asyncio.wait_for(
+                self._client.reload_identity(),
+                timeout=5.0,
+            )
+            logger.info("PiDog soul uploaded to /identity/SOUL.md (hash=%s)", soul_hash)
         except Exception as exc:
-            logger.warning("LLM smoke test FAILED: %s", exc)
+            logger.warning("Failed to upload soul to /identity/SOUL.md: %s", exc)
 
     async def _shutdown_watcher(self) -> None:
         """Wait for shutdown signal, then cancel all tasks."""
@@ -300,6 +362,14 @@ class PiDogZeniiBridge:
         if self._bg_tasks:
             await asyncio.gather(*self._bg_tasks, return_exceptions=True)
         self._bg_tasks.clear()
+
+        # Drain the action queue so Python 3.13 doesn't emit "RuntimeError: Event loop
+        # is closed" from GC cleanup of any pending Queue.get waiters.
+        while not self._action_queue.empty():
+            try:
+                self._action_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
         # Show shutdown message on LCD
         if self._lcd:
@@ -331,9 +401,23 @@ class PiDogZeniiBridge:
             except Exception:
                 pass
 
-        await self._hardware.close()
-        await self._voice.close()
-        await self._client.close()
+        # Close voice first so the stop flag unblocks any in-flight recording thread,
+        # then close hardware (pidog thread join can be slow — cap it).
+        try:
+            await asyncio.wait_for(self._voice.close(), timeout=3.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Voice close timed out or failed: %s", exc)
+
+        try:
+            await asyncio.wait_for(self._hardware.close(), timeout=8.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Hardware close timed out or failed: %s", exc)
+
+        try:
+            await asyncio.wait_for(self._client.close(), timeout=3.0)
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("Client close timed out or failed: %s", exc)
+
         logger.info("Bridge shutdown complete")
 
     def request_shutdown(self) -> None:
@@ -463,65 +547,57 @@ class PiDogZeniiBridge:
                         asyncio.to_thread(self._lcd.show, 2, "Thinking...     ")
                     )
 
-                # Build prompt with sensor context
-                prompt = self._build_prompt(text)
+                # Build prompt with sensor + memory context
+                prompt = await self._build_prompt(text)
 
                 # Switch to thinking LEDs while AI processes
                 self._enqueue_action(LEDS_THINKING)
 
-                # Send via WebSocket and collect response (with timeout)
+                # Stream response: actions dispatched as tags arrive,
+                # TTS starts on first complete sentence — not after full response.
+                spoke = False
+                stop_scroll = threading.Event()
+                timed_out = False
                 try:
-                    response_text = await asyncio.wait_for(
-                        self._ws_chat(prompt),
-                        timeout=self._config.ws_chat_timeout_secs,
+                    async with asyncio.timeout(self._config.ws_chat_timeout_secs):
+                        async for sentence in self._ws_chat_stream(prompt):
+                            if not spoke:
+                                # First sentence ready — start LCD scroll for full response
+                                # (we don't have the full text yet, so scroll this sentence)
+                                if self._lcd:
+                                    stop_scroll = threading.Event()
+                                    self._fire_and_forget(
+                                        asyncio.to_thread(
+                                            self._lcd.scroll, 2, sentence,
+                                            self._config.lcd_scroll_delay_secs, stop_scroll,
+                                        )
+                                    )
+                                spoke = True
+                            logger.info("Speaking: %s", sentence)
+                            await self._voice.speak(sentence)
+                except TimeoutError:
+                    timed_out = True
+                    logger.warning(
+                        "WS chat timed out after %.0fs", self._config.ws_chat_timeout_secs
                     )
-                except asyncio.TimeoutError:
-                    logger.warning("WS chat timed out after %.0fs", self._config.ws_chat_timeout_secs)
+
+                stop_scroll.set()
+                if self._lcd:
+                    self._fire_and_forget(asyncio.to_thread(self._lcd.show, 2, " " * 16))
+
+                if timed_out:
                     self._enqueue_action(LEDS_ALERT)
                     await asyncio.sleep(1)
                     self._enqueue_action(LEDS_LISTENING)
                     self._start_lcd_listening()
                     continue
 
-                if response_text:
-                    # Parse actions and LEDs from response
-                    parsed = parse_response(
-                        response_text, self._config.default_action_speed
-                    )
-
-                    # Log raw AI output so we can see what was received
-                    logger.info("AI raw: %s", response_text[:300])
-
-                    # Enqueue all actions immediately (non-blocking)
-                    for action in parsed.actions:
-                        logger.info("Queuing action: %s (speed=%d)", action.action, action.speed)
-                        self._enqueue_action(action)
-                    for led_cmd in parsed.led_commands:
-                        logger.info("Queuing LED: mode=%s color=%s", led_cmd.mode, led_cmd.color)
-                        self._enqueue_action(led_cmd)
-
-                    # Speak the clean text (concurrent with action execution)
-                    if parsed.clean_text:
-                        logger.info("Speaking: %s", parsed.clean_text)
-                        stop_scroll = threading.Event()
-                        if self._lcd:
-                            self._fire_and_forget(
-                                asyncio.to_thread(
-                                    self._lcd.scroll, 2, parsed.clean_text,
-                                    self._config.lcd_scroll_delay_secs, stop_scroll,
-                                )
-                            )
-                        await self._voice.speak(parsed.clean_text)
-                        stop_scroll.set()
-                        if self._lcd:
-                            self._fire_and_forget(
-                                asyncio.to_thread(self._lcd.show, 2, " " * 16)
-                            )
-                        # Brief pause so the speaker finishes reverberating before
-                        # the mic starts recording again — prevents TTS echo pickup
-                        await asyncio.sleep(0.5)
-                    else:
-                        logger.warning("No clean text to speak (response was: %s)", response_text[:200])
+                if spoke:
+                    # Brief pause: lets the speaker finish reverberating before
+                    # the mic opens again — prevents TTS echo pickup.
+                    await asyncio.sleep(0.5)
+                else:
+                    logger.warning("LLM returned no text")
 
                 # Done speaking — back to listening
                 self._enqueue_action(LEDS_LISTENING)
@@ -540,70 +616,146 @@ class PiDogZeniiBridge:
                 await asyncio.sleep(1)
                 self._start_lcd_listening()
 
-    def _build_prompt(self, user_text: str) -> str:
-        """Prepend sensor context and action-tag reminder to user speech."""
-        reminder = (
-            '[Rule: always include spoken text AND embed action tags for physical requests. '
-            'Use exact lowercase names from the soul. '
-            'Example — "Sure! <pidog_action>{"action":"stand","speed":80}</pidog_action>"]'
-        )
-        parts = []
+    async def _build_prompt(self, user_text: str) -> str:
+        """Build prompt: sensor snapshot + relevant memories + user speech.
+
+        Memory recall uses Zenii's hybrid FTS5+vector search so the AI has
+        relevant past context (events, observations) without manual tracking.
+        The soul/action-tag rules live in SOUL.md and are injected by Zenii.
+        """
+        parts: list[str] = []
+
         if self._last_sensor:
             parts.append(self._last_sensor.to_context_string())
+
+        # Recall relevant memories — fire concurrently with sensor context assembly.
+        try:
+            memories = await asyncio.wait_for(
+                self._client.recall_memory(user_text, limit=3),
+                timeout=2.0,
+            )
+            if memories:
+                snippets = "; ".join(
+                    m.get("content", "")[:120] for m in memories if m.get("content")
+                )
+                if snippets:
+                    parts.append(f"[Relevant context: {snippets}]")
+        except Exception:
+            pass  # memory recall is best-effort — never block a response
+
         parts.append(f"User said: {user_text}")
-        parts.append(reminder)
         return "\n".join(parts)
 
-    async def _ws_chat(self, prompt: str) -> str | None:
-        """Send prompt over WS, collect text messages until done.
+    async def _ws_chat_stream(self, prompt: str) -> AsyncIterator[str]:
+        """Send prompt, stream response as TTS-ready sentences.
 
-        Accumulates all text fragments. Tool calls/results are logged
-        but not returned (they're intermediate AI reasoning steps).
+        Dispatches <pidog_action> and <pidog_leds> tags **immediately** when
+        their closing tag arrives in the stream — no waiting for the full
+        response. Yields clean text as complete sentences so TTS can start
+        speaking the first sentence while the LLM is still generating the rest.
+
+        Latency profile vs old _ws_chat:
+          Old: wait full LLM → parse → enqueue actions → speak
+          New: first tag arrives (~0.3s) → action dispatched immediately
+               first sentence arrives (~0.8s) → TTS starts
+               remaining sentences yield as LLM streams
         """
         await self._client.ws_ensure_connected()
-        logger.info(">>> Sending to LLM: %s", prompt)
+        logger.info(">>> WS: %s", prompt[:120])
         await self._client.ws_send_prompt(prompt, self._session_id)
-        logger.info(">>> Waiting for LLM response...")
 
-        accumulated: list[str] = []
+        raw_buf = ""        # raw LLM output (may contain partial action tags)
+        text_buf = ""       # clean text waiting for a sentence boundary
+        total_chars = 0
+
+        def _dispatch_tag(m: re.Match) -> str:
+            """Extract, validate, and enqueue one complete action/LED tag. Returns ""."""
+            kind = m.group(1)
+            body = m.group(2).strip()
+            try:
+                data = json.loads(body)
+                if kind == "action":
+                    name = (
+                        data.get("action", "").lower().strip()
+                        .replace(" ", "_").replace("-", "_")
+                    )
+                    name = _ACTION_ALIASES.get(name, name)
+                    if name in VALID_ACTIONS:
+                        pidog_name = ACTION_MAP.get(name, name)
+                        speed = int(data.get("speed", self._config.default_action_speed))
+                        self._enqueue_action(PiDogAction(action=pidog_name, speed=speed))
+                        logger.info("Stream action: %s", pidog_name)
+                    else:
+                        logger.warning("Unknown stream action: %s", name)
+                else:  # leds
+                    mode = data.get("mode", "breath")
+                    if mode in VALID_LED_MODES:
+                        self._enqueue_action(LEDCommand(
+                            mode=mode,
+                            color=str(data.get("color", "#333399")),
+                            brightness=int(data.get("brightness", 80)),
+                        ))
+                        logger.info("Stream LED: %s", mode)
+            except Exception as exc:
+                logger.warning("Stream tag parse error: %s — %r", exc, body[:80])
+            return ""
 
         async for msg in self._client.ws_receive():
             msg_type = msg.get("type", "")
 
             if msg_type == "text":
-                content = msg.get("content", "")
-                if content:
-                    logger.info("<<< LLM chunk: %s", content[:200])
-                    accumulated.append(content)
+                chunk = msg.get("content", "")
+                if not chunk:
+                    continue
+                total_chars += len(chunk)
+                raw_buf += chunk
+
+                # Dispatch all complete tags in raw_buf, get back clean text.
+                cleaned = _STREAM_TAG_RE.sub(_dispatch_tag, raw_buf)
+
+                # If a partial opening tag is at the tail, hold it in raw_buf
+                # so we don't accidentally yield it as text.
+                p = cleaned.rfind("<pidog_")
+                if p >= 0 and not _STREAM_TAG_RE.search(cleaned[p:]):
+                    text_buf += cleaned[:p]
+                    raw_buf = cleaned[p:]
+                else:
+                    text_buf += cleaned
+                    raw_buf = ""
+
+                # Yield complete sentences from text_buf.
+                while True:
+                    m = _SENTENCE_SPLIT_RE.search(text_buf)
+                    if not m:
+                        break
+                    sentence = text_buf[: m.start() + 1].strip()
+                    text_buf = text_buf[m.end():]
+                    if sentence:
+                        yield sentence
 
             elif msg_type == "tool_call":
-                logger.info(
-                    "Tool call: %s(%s)",
-                    msg.get("tool_name"),
-                    msg.get("args"),
-                )
+                logger.info("Tool call: %s(%s)", msg.get("tool_name"), msg.get("args"))
 
             elif msg_type == "tool_result":
-                success = "OK" if msg.get("success") else "FAIL"
                 logger.info(
                     "Tool result: %s -> %s",
                     msg.get("tool_name"),
-                    success,
+                    "OK" if msg.get("success") else "FAIL",
                 )
 
             elif msg_type == "error":
-                logger.error(
-                    "Chat error: %s (hint: %s)",
-                    msg.get("error"),
-                    msg.get("hint"),
-                )
-                return None
+                logger.error("Chat error: %s (hint: %s)", msg.get("error"), msg.get("hint"))
+                return
 
             elif msg_type == "done":
-                logger.info("<<< LLM done. Total length: %d chars", sum(len(s) for s in accumulated))
-                break
-
-        return "".join(accumulated) if accumulated else None
+                # Flush: dispatch any remaining tags and yield leftover text.
+                remaining = _STREAM_TAG_RE.sub(_dispatch_tag, raw_buf)
+                remaining = re.sub(r"</?pidog_\w+[^>]*>", "", remaining)
+                final = (text_buf + remaining).strip()
+                if final:
+                    yield final
+                logger.info("<<< LLM done (%d chars)", total_chars)
+                return
 
     # -- Sensor Loop --
 
@@ -635,9 +787,9 @@ class PiDogZeniiBridge:
 
                 if should_store or throttle_expired:
                     self._last_memory_time = now
-                    # Fire-and-forget: don't block sensor loop on HTTP
+                    # PUT upserts by key — no duplicate entries on repeated calls.
                     self._fire_and_forget(
-                        self._client.store_memory(
+                        self._client.update_memory(
                             key="pidog:sensors:latest",
                             content=reading.to_context_string(),
                             category="daily",
@@ -761,9 +913,11 @@ class PiDogZeniiBridge:
                     )
                 elif isinstance(item, LEDCommand):
                     logger.info("Executing LED: mode=%s color=%s brightness=%d", item.mode, item.color, item.brightness)
+                    # LEDs change near-instantly — use a short timeout so a hung
+                    # RGB driver never stalls the queue for the full action window.
                     await asyncio.wait_for(
                         self._hardware.set_leds(item),
-                        timeout=self._config.action_timeout_secs,
+                        timeout=self._config.led_action_timeout_secs,
                     )
             except asyncio.TimeoutError:
                 logger.warning("Action timed out: %s", item)

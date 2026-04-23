@@ -104,8 +104,9 @@ class BridgeConfig:
 
     # Concurrency
     thread_pool_size: int = 6
-    ws_chat_timeout_secs: float = 120.0
+    ws_chat_timeout_secs: float = 30.0
     action_timeout_secs: float = 10.0
+    led_action_timeout_secs: float = 2.0
     sensor_read_timeout_secs: float = 5.0
 
     # WebSocket reconnection
@@ -215,6 +216,9 @@ class BridgeConfig:
         cfg.action_timeout_secs = _env_float(
             "PIDOG_ACTION_TIMEOUT", cfg.action_timeout_secs
         )
+        cfg.led_action_timeout_secs = _env_float(
+            "PIDOG_LED_ACTION_TIMEOUT", cfg.led_action_timeout_secs
+        )
         cfg.sensor_read_timeout_secs = _env_float(
             "PIDOG_SENSOR_READ_TIMEOUT", cfg.sensor_read_timeout_secs
         )
@@ -270,7 +274,8 @@ class BridgeConfig:
             "sensor_interval_secs", "memory_throttle_secs",
             "obstacle_alert_cm", "touch_cooldown_secs", "obstacle_cooldown_secs",
             "default_action_speed", "thread_pool_size",
-            "ws_chat_timeout_secs", "action_timeout_secs", "sensor_read_timeout_secs",
+            "ws_chat_timeout_secs", "action_timeout_secs", "led_action_timeout_secs",
+            "sensor_read_timeout_secs",
             "ws_reconnect_delay_secs", "ws_max_reconnect_delay_secs",
             "health_check_interval_secs",
             "lcd_enabled", "lcd_i2c_address", "lcd_i2c_bus", "lcd_scroll_delay_secs",
