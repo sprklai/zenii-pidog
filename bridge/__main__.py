@@ -102,15 +102,24 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    def _handle_signal() -> None:
+        bridge.request_shutdown()
+        # Remove handlers so a second Ctrl+C doesn't interrupt cleanup threads.
+        for _sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.remove_signal_handler(_sig)
+            except Exception:
+                pass
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, bridge.request_shutdown)
+        loop.add_signal_handler(sig, _handle_signal)
 
     try:
         loop.run_until_complete(bridge.start())
     except KeyboardInterrupt:
         logger.info("Interrupted")
     finally:
-        executor.shutdown(wait=False)
+        executor.shutdown(wait=False, cancel_futures=True)
         loop.run_until_complete(loop.shutdown_asyncgens())
         loop.close()
 

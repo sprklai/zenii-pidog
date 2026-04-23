@@ -188,7 +188,7 @@ class RealHardware(HardwareInterface):
         bps = 1.0
         async with self._action_lock:
             await asyncio.to_thread(
-                self._rgb.set_mode, style, (r, g, b), bps, brightness
+                self._rgb.set_mode, style, [r, g, b], bps, brightness
             )
 
     def _sit_and_stop_sync(self) -> None:
@@ -196,7 +196,7 @@ class RealHardware(HardwareInterface):
         # to invoke even after asyncio loops have been cancelled.
         logger.info("Shutdown: moving PiDog to lie down position ...")
         try:
-            self._dog.do_action("lie_down", speed=50)
+            self._dog.do_action("lie", speed=50)  # pidog key for lie_down
             self._dog.wait_all_done()
             logger.info("Shutdown: PiDog is lying down")
         except Exception as exc:
@@ -207,7 +207,7 @@ class RealHardware(HardwareInterface):
 
     async def close(self) -> None:
         try:
-            await asyncio.to_thread(self._rgb.set_mode, "monochromatic", (0, 0, 0), 1, 0)
+            await asyncio.to_thread(self._rgb.set_mode, "monochromatic", [0, 0, 0], 1, 0)
         except Exception:
             pass
         try:
