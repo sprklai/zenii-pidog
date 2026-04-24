@@ -591,14 +591,13 @@ class CloudVoice(VoiceInterface):
                 # Covers the common case of a plan-restricted model (e.g. nova-3).
                 if effective_model != _FALLBACK_MODEL:
                     logger.warning(
-                        "Deepgram rejected model '%s' (HTTP %d) — retrying with %s. "
-                        "Fix: remove stt_model from bridge_config.toml [voice.pipecat]. "
-                        "Deepgram says: %s",
+                        "Deepgram rejected model '%s' (HTTP %d) — permanently switching to %s "
+                        "for this session. Fix: remove stt_model from bridge_config.toml "
+                        "[voice.pipecat]. Deepgram says: %s",
                         effective_model, status, _FALLBACK_MODEL, dg_reason,
                     )
-                    # Temporarily pin the model to the fallback so the recursive call
-                    # connects with nova-2 and won't re-enter this fallback branch.
-                    saved = self._config.pipecat_stt_model
+                    # Permanently update — no restore on success, so every subsequent
+                    # listen() call goes directly to nova-2 without retrying the rejected model.
                     self._config.pipecat_stt_model = _FALLBACK_MODEL
                     try:
                         return await self._stt_deepgram_streaming()
@@ -606,8 +605,7 @@ class CloudVoice(VoiceInterface):
                         raise
                     except Exception as fb_exc:
                         logger.warning("Deepgram fallback (%s) also failed: %s", _FALLBACK_MODEL, fb_exc)
-                    finally:
-                        self._config.pipecat_stt_model = saved
+                    return None
 
                 self._stt_fault_count += 1
                 if self._stt_fault_count >= self._STT_FAULT_LIMIT:
