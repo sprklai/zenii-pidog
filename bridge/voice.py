@@ -455,7 +455,7 @@ class CloudVoice(VoiceInterface):
             audio_q.put(indata.tobytes())
 
         qs = "&".join([
-            f"model={self._config.pipecat_stt_model or 'nova-2'}",
+            f"model={self._config.pipecat_stt_model or 'nova-3'}",
             "language=en",
             "encoding=linear16",
             f"sample_rate={sample_rate}",
@@ -467,7 +467,7 @@ class CloudVoice(VoiceInterface):
             "interim_results=true",
         ])
         ws_url = f"wss://api.deepgram.com/v1/listen?{qs}"
-        headers = {"Authorization": f"Token {self._config.pipecat_stt_api_key}"}
+        headers = {"Authorization": f"Token {self._config.pipecat_stt_api_key.strip()}"}
 
         transcript = ""
 
@@ -578,17 +578,25 @@ class CloudVoice(VoiceInterface):
             status = getattr(exc, "status", None) or 0
             if 400 <= status < 500:
                 self._stt_fault_count += 1
+                model = self._config.pipecat_stt_model or "nova-3"
                 if self._stt_fault_count >= self._STT_FAULT_LIMIT:
-                    model = self._config.pipecat_stt_model or "nova-2"
                     raise _SttConfigError(
-                        f"Deepgram WebSocket rejected (HTTP {status}) — "
-                        f"check stt_api_key and stt_model (currently '{model}') "
-                        "in bridge_config.toml"
+                        f"Deepgram WebSocket rejected (HTTP {status}) after "
+                        f"{self._stt_fault_count} attempts — "
+                        f"check stt_api_key and stt_model ('{model}') in bridge_config.toml"
                     )
+                logger.warning(
+                    "Deepgram WS rejected (HTTP %d, attempt %d/%d) — "
+                    "most likely cause: invalid/expired Deepgram API key. "
+                    "Check stt_api_key in bridge_config.toml. "
+                    "Model in use: %s",
+                    status, self._stt_fault_count, self._STT_FAULT_LIMIT, model,
+                )
                 # Back off before the next retry so we don't flood logs while
                 # the circuit breaker is counting up to _STT_FAULT_LIMIT.
                 await asyncio.sleep(min(self._stt_fault_count * 2.0, 10.0))
-            logger.warning("Deepgram streaming failed: %s", exc)
+            else:
+                logger.warning("Deepgram streaming failed: %s", exc)
             return None
         except Exception as exc:
             logger.warning("Deepgram streaming failed: %s", exc)
