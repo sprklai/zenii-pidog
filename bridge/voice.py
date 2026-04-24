@@ -455,7 +455,7 @@ class CloudVoice(VoiceInterface):
             audio_q.put(indata.tobytes())
 
         qs = "&".join([
-            f"model={self._config.pipecat_stt_model or 'nova-3'}",
+            f"model={self._config.pipecat_stt_model or 'nova-2'}",
             "language=en",
             "encoding=linear16",
             f"sample_rate={sample_rate}",
@@ -578,19 +578,22 @@ class CloudVoice(VoiceInterface):
             status = getattr(exc, "status", None) or 0
             if 400 <= status < 500:
                 self._stt_fault_count += 1
-                model = self._config.pipecat_stt_model or "nova-3"
+                model = self._config.pipecat_stt_model or "nova-2"
+                # Try to surface Deepgram's actual rejection reason from the response
+                dg_reason = getattr(exc, "message", "") or str(exc)
                 if self._stt_fault_count >= self._STT_FAULT_LIMIT:
                     raise _SttConfigError(
                         f"Deepgram WebSocket rejected (HTTP {status}) after "
                         f"{self._stt_fault_count} attempts — "
-                        f"check stt_api_key and stt_model ('{model}') in bridge_config.toml"
+                        f"possible causes: invalid/expired stt_api_key, model '{model}' "
+                        f"not available on your plan, or bad query parameter. "
+                        f"Deepgram says: {dg_reason}"
                     )
                 logger.warning(
-                    "Deepgram WS rejected (HTTP %d, attempt %d/%d) — "
-                    "most likely cause: invalid/expired Deepgram API key. "
-                    "Check stt_api_key in bridge_config.toml. "
-                    "Model in use: %s",
-                    status, self._stt_fault_count, self._STT_FAULT_LIMIT, model,
+                    "Deepgram WS rejected (HTTP %d, attempt %d/%d). "
+                    "Possible causes: invalid/expired stt_api_key, model '%s' not on your "
+                    "Deepgram plan (try nova-2), or bad parameter. Deepgram says: %s",
+                    status, self._stt_fault_count, self._STT_FAULT_LIMIT, model, dg_reason,
                 )
                 # Back off before the next retry so we don't flood logs while
                 # the circuit breaker is counting up to _STT_FAULT_LIMIT.
