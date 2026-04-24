@@ -454,20 +454,29 @@ class CloudVoice(VoiceInterface):
                 logger.debug("Audio callback: %s", status)
             audio_q.put(indata.tobytes())
 
-        qs = "&".join([
-            f"model={self._config.pipecat_stt_model or 'nova-2'}",
-            "language=en",
-            "encoding=linear16",
-            f"sample_rate={sample_rate}",
-            "channels=1",
-            f"endpointing={self._config.deepgram_endpointing_ms}",
-            f"utterance_end_ms={self._config.deepgram_utterance_end_ms}",
-            "vad_events=true",
-            "smart_format=true",
-            "interim_results=true",
-        ])
-        ws_url = f"wss://api.deepgram.com/v1/listen?{qs}"
+        _FALLBACK_MODEL = "nova-2"
+        effective_model = self._config.pipecat_stt_model or _FALLBACK_MODEL
+
+        def _build_ws_url(model: str) -> str:
+            qs = "&".join([
+                f"model={model}",
+                "language=en",
+                "encoding=linear16",
+                f"sample_rate={sample_rate}",
+                "channels=1",
+                f"endpointing={self._config.deepgram_endpointing_ms}",
+                f"utterance_end_ms={self._config.deepgram_utterance_end_ms}",
+                "vad_events=true",
+                "smart_format=true",
+                "interim_results=true",
+            ])
+            return f"wss://api.deepgram.com/v1/listen?{qs}"
+
+        ws_url = _build_ws_url(effective_model)
         headers = {"Authorization": f"Token {self._config.pipecat_stt_api_key.strip()}"}
+
+        logger.info("Connecting to Deepgram (model=%s, device=%s)",
+                    effective_model, device if device is not None else "default")
 
         transcript = ""
 
@@ -475,8 +484,7 @@ class CloudVoice(VoiceInterface):
             async with self._get_http().ws_connect(
                 ws_url, headers=headers, heartbeat=20, receive_timeout=60.0
             ) as ws:
-                logger.info("MIC streaming to Deepgram (device=%s), speak now...",
-                            device if device is not None else "default")
+                logger.info("MIC streaming to Deepgram, speak now...")
 
                 with sd.InputStream(
                     samplerate=sample_rate,
@@ -577,26 +585,43 @@ class CloudVoice(VoiceInterface):
         except aiohttp.WSServerHandshakeError as exc:
             status = getattr(exc, "status", None) or 0
             if 400 <= status < 500:
-                self._stt_fault_count += 1
-                model = self._config.pipecat_stt_model or "nova-2"
-                # Try to surface Deepgram's actual rejection reason from the response
                 dg_reason = getattr(exc, "message", "") or str(exc)
+                # If the failure is from an explicitly-configured non-default model,
+                # retry immediately with nova-2 before counting as a fault.
+                # Covers the common case of a plan-restricted model (e.g. nova-3).
+                if effective_model != _FALLBACK_MODEL:
+                    logger.warning(
+                        "Deepgram rejected model '%s' (HTTP %d) — retrying with %s. "
+                        "Fix: remove stt_model from bridge_config.toml [voice.pipecat]. "
+                        "Deepgram says: %s",
+                        effective_model, status, _FALLBACK_MODEL, dg_reason,
+                    )
+                    # Temporarily pin the model to the fallback so the recursive call
+                    # connects with nova-2 and won't re-enter this fallback branch.
+                    saved = self._config.pipecat_stt_model
+                    self._config.pipecat_stt_model = _FALLBACK_MODEL
+                    try:
+                        return await self._stt_deepgram_streaming()
+                    except _SttConfigError:
+                        raise
+                    except Exception as fb_exc:
+                        logger.warning("Deepgram fallback (%s) also failed: %s", _FALLBACK_MODEL, fb_exc)
+                    finally:
+                        self._config.pipecat_stt_model = saved
+
+                self._stt_fault_count += 1
                 if self._stt_fault_count >= self._STT_FAULT_LIMIT:
                     raise _SttConfigError(
                         f"Deepgram WebSocket rejected (HTTP {status}) after "
                         f"{self._stt_fault_count} attempts — "
-                        f"possible causes: invalid/expired stt_api_key, model '{model}' "
-                        f"not available on your plan, or bad query parameter. "
+                        f"check stt_api_key and model '{effective_model}' in bridge_config.toml. "
                         f"Deepgram says: {dg_reason}"
                     )
                 logger.warning(
-                    "Deepgram WS rejected (HTTP %d, attempt %d/%d). "
-                    "Possible causes: invalid/expired stt_api_key, model '%s' not on your "
-                    "Deepgram plan (try nova-2), or bad parameter. Deepgram says: %s",
-                    status, self._stt_fault_count, self._STT_FAULT_LIMIT, model, dg_reason,
+                    "Deepgram WS rejected (HTTP %d, attempt %d/%d, model=%s). "
+                    "Check stt_api_key in bridge_config.toml. Deepgram says: %s",
+                    status, self._stt_fault_count, self._STT_FAULT_LIMIT, effective_model, dg_reason,
                 )
-                # Back off before the next retry so we don't flood logs while
-                # the circuit breaker is counting up to _STT_FAULT_LIMIT.
                 await asyncio.sleep(min(self._stt_fault_count * 2.0, 10.0))
             else:
                 logger.warning("Deepgram streaming failed: %s", exc)
