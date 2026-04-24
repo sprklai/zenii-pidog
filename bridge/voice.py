@@ -680,7 +680,7 @@ class CloudVoice(VoiceInterface):
         Uses sarvamai SDK (pip install sarvamai).
         Config:
           pipecat_stt_api_key  — Sarvam AI subscription key
-          pipecat_stt_model    — default "saaras:v2"
+          pipecat_stt_model    — default "saaras:v3"  (also: saarika:v2.5)
           sarvam_language_code — default "en-IN"  (also accepts hi-IN, ta-IN, etc.)
         """
         try:
@@ -714,7 +714,7 @@ class CloudVoice(VoiceInterface):
                 logger.debug("Sarvam audio callback: %s", status)
             audio_q.put(indata.tobytes())
 
-        model = self._config.pipecat_stt_model or "saaras:v2"
+        model = self._config.pipecat_stt_model or "saaras:v3"
         language = self._config.sarvam_language_code
 
         logger.info("Connecting to Sarvam AI (model=%s, lang=%s, device=%s)",
