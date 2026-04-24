@@ -11,7 +11,9 @@ numpy>=1.24
 tomli>=2.0; python_version < "3.11"
 
 # --- Cloud voice (PIDOG_VOICE_PROVIDER=pipecat) ---
-# No extra packages needed — providers are called directly via REST (aiohttp).
+# No extra packages needed for deepgram/azure/google/groq — direct REST via aiohttp.
+# Sarvam AI STT requires the SDK:
+sarvamai>=0.1.0   # pip install sarvamai  (for stt_provider = "sarvam")
 # Set PIPECAT_STT_API_KEY and PIPECAT_TTS_API_KEY before running.
-# Supported STT: deepgram, azure, google
+# Supported STT: deepgram, sarvam, groq, azure, google
 # Supported TTS: cartesia, elevenlabs, azure, google

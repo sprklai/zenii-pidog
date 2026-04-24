@@ -8,11 +8,13 @@ Provider selection via PIDOG_VOICE_PROVIDER env var:
 STT providers (set via pipecat_stt_provider / PIPECAT_STT_PROVIDER):
   "groq"     - Groq Whisper (whisper-large-v3-turbo) — fastest, best accent support
   "deepgram" - Deepgram Nova-2 WebSocket streaming — low latency, built-in VAD
+  "sarvam"   - Sarvam AI Saaras — optimised for Indian English (en-IN) + 10 Indian languages
   "azure"    - Azure Speech batch REST
   "google"   - Google Cloud Speech batch REST
 
 Groq Whisper uses VAD-based recording (energy threshold) then a single POST to
 api.groq.com/openai/v1/audio/transcriptions — no streaming required.
+Sarvam AI uses VAD-based recording then the sarvamai SDK WebSocket (pip install sarvamai).
 """
 
 from __future__ import annotations
@@ -295,6 +297,8 @@ class CloudVoice(VoiceInterface):
                 result = await self._stt_groq_batch()
             elif provider == "deepgram":
                 result = await self._stt_deepgram_streaming()
+            elif provider == "sarvam":
+                result = await self._stt_sarvam_streaming()
             elif provider == "azure":
                 result = await self._stt_azure_batch()
             elif provider == "google":
@@ -665,6 +669,212 @@ class CloudVoice(VoiceInterface):
         except Exception as exc:
             logger.warning("Microphone read failed: %s", exc)
             return None
+
+    async def _stt_sarvam_streaming(self) -> str | None:
+        """Live-stream mic audio to Sarvam AI Saaras via WebSocket, return transcript.
+
+        Architecture mirrors Deepgram streaming:
+          sounddevice callback → audio_q → _send_audio (chunks every 500ms or on silence)
+          Sarvam WS responses → _recv_transcript (collects until is_final or timeout)
+
+        Uses sarvamai SDK (pip install sarvamai).
+        Config:
+          pipecat_stt_api_key  — Sarvam AI subscription key
+          pipecat_stt_model    — default "saaras:v2"
+          sarvam_language_code — default "en-IN"  (also accepts hi-IN, ta-IN, etc.)
+        """
+        try:
+            from sarvamai import AsyncSarvamAI  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("sarvamai not installed — run: pip install sarvamai")
+            return None
+
+        try:
+            import numpy as np
+            import sounddevice as sd  # type: ignore[import-untyped]
+        except ImportError:
+            logger.warning("sounddevice/numpy not installed — cannot capture audio")
+            return None
+
+        sample_rate = self._config.pipecat_sample_rate
+        device = self._config.mic_device if self._config.mic_device >= 0 else None
+
+        # Sounddevice sends 20ms sub-chunks via callback; we accumulate them into
+        # 500ms WAV chunks before sending to Sarvam (gives the model enough context
+        # per call while keeping end-of-speech latency low).
+        sub_ms = 20
+        sub_frames = int(sample_rate * sub_ms / 1000)
+        chunk_ms = 500
+        subs_per_chunk = chunk_ms // sub_ms   # 25 sub-chunks = 500ms
+
+        audio_q: _queue.SimpleQueue[bytes | None] = _queue.SimpleQueue()
+
+        def _on_audio(indata, frames, time_info, status) -> None:  # type: ignore[no-untyped-def]
+            if status:
+                logger.debug("Sarvam audio callback: %s", status)
+            audio_q.put(indata.tobytes())
+
+        model = self._config.pipecat_stt_model or "saaras:v2"
+        language = self._config.sarvam_language_code
+
+        logger.info("Connecting to Sarvam AI (model=%s, lang=%s, device=%s)",
+                    model, language, device if device is not None else "default")
+
+        transcript = ""
+
+        try:
+            client = AsyncSarvamAI(
+                api_subscription_key=self._config.pipecat_stt_api_key.strip()
+            )
+            async with client.speech_to_text_streaming.connect(
+                model=model,
+                mode="transcribe",
+                language_code=language,
+                high_vad_sensitivity=True,
+            ) as ws:
+                logger.info("MIC streaming to Sarvam AI, speak now...")
+
+                with sd.InputStream(
+                    samplerate=sample_rate,
+                    channels=1,
+                    dtype="int16",
+                    blocksize=sub_frames,
+                    callback=_on_audio,
+                    device=device,
+                ):
+                    async def _send_audio() -> None:
+                        """Read mic chunks, run energy VAD, send 500ms WAV slices to Sarvam."""
+                        loop = asyncio.get_running_loop()
+                        rms_threshold = max(
+                            300, int(self._config.silence_threshold * 32767 * 0.5)
+                        )
+                        wait_limit = int(
+                            self._config.listen_timeout_secs * 1000 / sub_ms
+                        )
+                        # Stop sending after 1.2s of post-speech silence
+                        silence_end_subs = int(1200 / sub_ms)
+
+                        pending: list[bytes] = []   # sub-chunks not yet sent
+                        speech_started = False
+                        silence_count = 0
+                        wait_count = 0
+
+                        while True:
+                            raw = await loop.run_in_executor(self._executor, audio_q.get)
+                            if raw is None:
+                                break
+
+                            arr = np.frombuffer(raw, dtype="int16").astype("float32")
+                            rms = int(np.sqrt(np.mean(arr ** 2)))
+
+                            if not speech_started:
+                                wait_count += 1
+                                if rms > rms_threshold:
+                                    logger.info("MIC speech detected (RMS=%d)", rms)
+                                    speech_started = True
+                                    pending.append(raw)
+                                    silence_count = 0
+                                elif wait_count >= wait_limit:
+                                    break  # no speech within timeout
+                            else:
+                                pending.append(raw)
+                                if rms < rms_threshold:
+                                    silence_count += 1
+                                else:
+                                    silence_count = 0
+
+                                # Flush every 500ms OR immediately when speech ends
+                                speech_ended = silence_count >= silence_end_subs
+                                if len(pending) >= subs_per_chunk or speech_ended:
+                                    pcm = b"".join(pending)
+                                    pending = []
+                                    wav = self._pcm_to_wav(pcm, sample_rate)
+                                    audio_b64 = base64.b64encode(wav).decode("utf-8")
+                                    try:
+                                        await ws.transcribe(audio=audio_b64)
+                                    except Exception as exc:
+                                        logger.debug("Sarvam send error: %s", exc)
+                                        break
+                                    if speech_ended:
+                                        break
+
+                        # Flush any leftover sub-chunks after loop exits
+                        if pending:
+                            pcm = b"".join(pending)
+                            wav = self._pcm_to_wav(pcm, sample_rate)
+                            audio_b64 = base64.b64encode(wav).decode("utf-8")
+                            try:
+                                await ws.transcribe(audio=audio_b64)
+                            except Exception:
+                                pass
+
+                    async def _recv_transcript() -> str:
+                        """Collect Sarvam responses until is_final or timeout."""
+                        nonlocal transcript
+                        async with asyncio.timeout(
+                            self._config.listen_timeout_secs
+                        ) as deadline:
+                            while True:
+                                response = await ws.recv()
+
+                                # Extract text — try every field name Sarvam SDK may use
+                                if hasattr(response, "transcript"):
+                                    text = response.transcript or ""
+                                elif hasattr(response, "text"):
+                                    text = response.text or ""
+                                elif isinstance(response, dict):
+                                    text = (
+                                        response.get("transcript")
+                                        or response.get("text", "")
+                                    )
+                                else:
+                                    text = ""
+                                text = text.strip()
+
+                                # Detect final vs interim result
+                                is_final = (
+                                    getattr(response, "is_final", False)
+                                    or (isinstance(response, dict)
+                                        and response.get("is_final", False))
+                                )
+
+                                if text:
+                                    logger.info(
+                                        "STT %s (Sarvam): %s",
+                                        "FINAL" if is_final else "interim",
+                                        text,
+                                    )
+                                    # Reschedule timeout from when we first hear text
+                                    if not transcript:
+                                        deadline.reschedule(
+                                            asyncio.get_running_loop().time()
+                                            + self._config.listen_timeout_secs
+                                        )
+                                    transcript = text  # keep latest (covers interim updates)
+
+                                if is_final:
+                                    return transcript
+
+                        return transcript  # timeout fallback — return best interim
+
+                    send_task = asyncio.create_task(_send_audio())
+                    try:
+                        await _recv_transcript()
+                    except asyncio.TimeoutError:
+                        pass
+                    finally:
+                        audio_q.put(None)   # unblock _send_audio queue.get
+                        send_task.cancel()
+                        try:
+                            await send_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+
+        except Exception as exc:
+            logger.warning("Sarvam STT failed: %s", exc)
+            return None
+
+        return transcript if transcript else None
 
     async def _stt_azure_batch(self) -> str | None:
         """Batch POST to Azure Speech-to-Text (fallback for Azure provider)."""

@@ -113,16 +113,20 @@ echo -e "  ${BOLD}Select voice provider for bridge_config.toml:${NC}"
 echo ""
 echo -e "  ${CYAN}1)${NC} ${BOLD}text${NC}        — stdin/stdout (SSH, dev)"
 echo -e "  ${CYAN}2)${NC} ${BOLD}local${NC}       — Vosk STT + Piper TTS (offline)"
-echo -e "  ${CYAN}3)${NC} ${BOLD}pipecat-dc${NC}  — Deepgram + Cartesia (cloud, low-latency)"
-echo -e "  ${CYAN}4)${NC} ${BOLD}pipecat-de${NC}  — Deepgram + ElevenLabs (cloud, voice cloning)"
+echo -e "  ${CYAN}3)${NC} ${BOLD}pipecat-dc${NC}  — Deepgram STT + Cartesia TTS (low-latency)"
+echo -e "  ${CYAN}4)${NC} ${BOLD}pipecat-de${NC}  — Deepgram STT + ElevenLabs TTS (voice cloning)"
+echo -e "  ${CYAN}5)${NC} ${BOLD}pipecat-sc${NC}  — Sarvam AI STT + Cartesia TTS (Indian English)"
+echo -e "  ${CYAN}6)${NC} ${BOLD}pipecat-se${NC}  — Sarvam AI STT + ElevenLabs TTS (Indian English)"
 echo ""
-read -rp "  Select [1-4]: " CHOICE
+read -rp "  Select [1-6]: " CHOICE
 
 case "${CHOICE}" in
     1) VOICE_PROVIDER="text"       ;;
     2) VOICE_PROVIDER="local"      ;;
     3) VOICE_PROVIDER="pipecat-dc" ;;
     4) VOICE_PROVIDER="pipecat-de" ;;
+    5) VOICE_PROVIDER="pipecat-sc" ;;
+    6) VOICE_PROVIDER="pipecat-se" ;;
     *)
         warn "Invalid choice — defaulting to text"
         VOICE_PROVIDER="text"
@@ -140,41 +144,63 @@ TTS_API_KEY=""
 TTS_VOICE=""
 STT_PROVIDER=""
 TTS_PROVIDER=""
+SARVAM_LANGUAGE=""
 
 if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
     echo ""
     echo -e "${CYAN}${BOLD}[2]${NC} ${BOLD}API Keys${NC}"
     echo ""
 
-    STT_PROVIDER="deepgram"
-    TTS_PROVIDER="cartesia"
-    [[ "${VOICE_PROVIDER}" == "pipecat-de" ]] && TTS_PROVIDER="elevenlabs"
+    # Derive STT and TTS provider from the combined choice
+    case "${VOICE_PROVIDER}" in
+        pipecat-dc) STT_PROVIDER="deepgram";  TTS_PROVIDER="cartesia"   ;;
+        pipecat-de) STT_PROVIDER="deepgram";  TTS_PROVIDER="elevenlabs" ;;
+        pipecat-sc) STT_PROVIDER="sarvam";    TTS_PROVIDER="cartesia"   ;;
+        pipecat-se) STT_PROVIDER="sarvam";    TTS_PROVIDER="elevenlabs" ;;
+    esac
 
-    # --- Deepgram ---
+    STT_DISPLAY="${STT_PROVIDER^}"
+
+    # --- STT API Key ---
     if [[ -n "${PIPECAT_STT_API_KEY:-}" ]]; then
         STT_API_KEY="${PIPECAT_STT_API_KEY}"
-        pass "Deepgram key: from environment (PIPECAT_STT_API_KEY)"
+        pass "${STT_DISPLAY} STT key: from environment (PIPECAT_STT_API_KEY)"
     else
-        if "${DAEMON_UP}" && cred_exists "api_key:deepgram"; then
-            info "Deepgram key found in credential store (daemon cannot return raw values)"
+        if "${DAEMON_UP}" && cred_exists "api_key:${STT_PROVIDER}"; then
+            info "${STT_DISPLAY} key found in credential store (daemon cannot return raw values)"
         fi
-        echo -n "  Enter Deepgram API key: "
-        read -rs DG_KEY
+        echo -n "  Enter ${STT_DISPLAY} API key: "
+        read -rs STT_KEY_INPUT
         echo ""
-        if [[ -n "${DG_KEY}" ]]; then
-            STT_API_KEY="${DG_KEY}"
-            pass "Deepgram key: entered"
+        if [[ -n "${STT_KEY_INPUT}" ]]; then
+            STT_API_KEY="${STT_KEY_INPUT}"
+            pass "${STT_DISPLAY} key: entered"
         else
             STT_API_KEY=""
-            warn "No Deepgram key entered — STT will fail until you edit bridge_config.toml"
+            warn "No ${STT_DISPLAY} key entered — STT will fail until you edit bridge_config.toml"
+        fi
+    fi
+
+    # --- Sarvam language (only if using Sarvam STT) ---
+    if [[ "${STT_PROVIDER}" == "sarvam" ]]; then
+        echo ""
+        echo -e "  ${BOLD}Sarvam AI language code${NC}"
+        echo -e "  ${DIM}Options: en-IN, hi-IN, ta-IN, te-IN, kn-IN, ml-IN, mr-IN, gu-IN, pa-IN, bn-IN${NC}"
+        if [[ -n "${SARVAM_LANGUAGE_CODE:-}" ]]; then
+            SARVAM_LANGUAGE="${SARVAM_LANGUAGE_CODE}"
+            pass "Sarvam language: from environment (${SARVAM_LANGUAGE})"
+        else
+            read -rp "  Language code [default: en-IN]: " LANG_INPUT
+            SARVAM_LANGUAGE="${LANG_INPUT:-en-IN}"
+            pass "Sarvam language: ${SARVAM_LANGUAGE}"
         fi
     fi
 
     echo ""
 
-    # --- Cartesia or ElevenLabs ---
-    CRED_KEY="api_key:${TTS_PROVIDER}"
+    # --- TTS API Key ---
     TTS_DISPLAY="${TTS_PROVIDER^}"
+    CRED_KEY="api_key:${TTS_PROVIDER}"
 
     if [[ -n "${PIPECAT_TTS_API_KEY:-}" ]]; then
         TTS_API_KEY="${PIPECAT_TTS_API_KEY}"
@@ -354,11 +380,10 @@ fi
 
 # Determine voice provider string for TOML
 case "${VOICE_PROVIDER}" in
-    "text")       TOML_PROVIDER="text"   ;;
-    "local")      TOML_PROVIDER="local"  ;;
-    "pipecat-dc") TOML_PROVIDER="pipecat" ;;
-    "pipecat-de") TOML_PROVIDER="pipecat" ;;
-    *)            TOML_PROVIDER="text"   ;;
+    "text")       TOML_PROVIDER="text"    ;;
+    "local")      TOML_PROVIDER="local"   ;;
+    pipecat-*)    TOML_PROVIDER="pipecat" ;;
+    *)            TOML_PROVIDER="text"    ;;
 esac
 
 # Build TOML
@@ -403,6 +428,9 @@ esac
         echo "tts_api_key = \"${TTS_API_KEY}\""
         if [[ -n "${TTS_VOICE}" ]]; then
             echo "tts_voice = \"${TTS_VOICE}\""
+        fi
+        if [[ -n "${SARVAM_LANGUAGE}" ]]; then
+            echo "sarvam_language_code = \"${SARVAM_LANGUAGE}\""
         fi
     fi
 

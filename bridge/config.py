@@ -97,6 +97,10 @@ class BridgeConfig:
     deepgram_endpointing_ms: int = 400
     deepgram_utterance_end_ms: int = 1000
 
+    # Sarvam AI STT — language for Saaras model
+    # Options: en-IN, hi-IN, ta-IN, te-IN, kn-IN, ml-IN, mr-IN, gu-IN, pa-IN, bn-IN, od-IN
+    sarvam_language_code: str = "en-IN"
+
     # Sensor loop
     sensor_interval_secs: float = 2.0
     memory_throttle_secs: float = 30.0
@@ -201,6 +205,9 @@ class BridgeConfig:
         )
         cfg.deepgram_utterance_end_ms = _env_int(
             "DEEPGRAM_UTTERANCE_END_MS", cfg.deepgram_utterance_end_ms
+        )
+        cfg.sarvam_language_code = os.environ.get(
+            "SARVAM_LANGUAGE_CODE", cfg.sarvam_language_code
         )
 
         # Sensor settings
@@ -333,6 +340,7 @@ class BridgeConfig:
             "sample_rate": "pipecat_sample_rate",
             "deepgram_endpointing_ms": "deepgram_endpointing_ms",
             "deepgram_utterance_end_ms": "deepgram_utterance_end_ms",
+            "sarvam_language_code": "sarvam_language_code",
         }
         for toml_key, attr in pipecat_map.items():
             if toml_key in pipecat:
