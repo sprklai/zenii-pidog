@@ -47,11 +47,20 @@ done
 SERVICE_NAME="${SERVICE_NAME:-pidog-bridge}"
 DAEMON_SERVICE_NAME="${DAEMON_SERVICE_NAME:-zenii-pidog}"
 
-# Default config path: same convention as the bridge — sibling dir named pidog-zenii
-DEFAULT_CONFIG="/home/${USER}/pidog-zenii/bridge_config.toml"
+# Runtime base: prefer the git repo dir itself (single-folder setup).
+# Falls back to ~/pidog-zenii for legacy two-folder setups.
+if [[ -f "${SCRIPT_DIR}/.venv/bin/activate" ]]; then
+    RUNTIME_BASE="${SCRIPT_DIR}"
+elif [[ -f "/home/${USER}/pidog-zenii/.venv/bin/activate" ]]; then
+    RUNTIME_BASE="/home/${USER}/pidog-zenii"
+else
+    RUNTIME_BASE="${SCRIPT_DIR}"
+fi
+
+DEFAULT_CONFIG="${RUNTIME_BASE}/bridge_config.toml"
 PIDOG_CONFIG="${PIDOG_CONFIG:-${DEFAULT_CONFIG}}"
 
-VENV_ACTIVATE="/home/${USER}/pidog-zenii/.venv/bin/activate"
+VENV_ACTIVATE="${RUNTIME_BASE}/.venv/bin/activate"
 
 echo -e "${BOLD}"
 echo "  ╔══════════════════════════════════════════════════════╗"
@@ -84,6 +93,7 @@ if [[ "${DO_PULL}" = true ]]; then
     else
         warn "${SCRIPT_DIR} is not a git repo — skipping pull"
     fi
+
 fi
 
 # =============================================================================
