@@ -92,10 +92,10 @@ class BridgeConfig:
     pipecat_tts_voice: str = ""
     pipecat_sample_rate: int = 16000
     # Deepgram endpointing: ms of silence before utterance-end is declared.
-    # Lower = faster response but more risk of cutting off slow speakers.
-    # Old hardcoded values were 400/1000; 300/800 reduces end-of-speech latency ~400ms.
-    deepgram_endpointing_ms: int = 300
-    deepgram_utterance_end_ms: int = 800
+    # utterance_end_ms minimum enforced by Deepgram API is 1000ms — values below
+    # this cause HTTP 400 Bad Request on the WebSocket handshake.
+    deepgram_endpointing_ms: int = 400
+    deepgram_utterance_end_ms: int = 1000
 
     # Sensor loop
     sensor_interval_secs: float = 2.0
