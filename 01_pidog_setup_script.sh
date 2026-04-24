@@ -434,30 +434,35 @@ fi
 # =============================================================================
 # Step 9: Install Python bridge
 # =============================================================================
-BRIDGE_DIR="${HOME}/pidog-zenii"
+BRIDGE_DIR="${HOME}/zenii-pidog"
 step "Installing Python bridge"
 
 # Install system deps needed by the bridge
 if command -v apt-get &>/dev/null; then
     info "Installing system packages for bridge..."
     ${SUDO} apt-get install -y --no-install-recommends \
-        python3 python3-pip python3-venv \
+        python3 python3-pip python3-venv git \
         portaudio19-dev libffi-dev \
         alsa-utils jq > /dev/null 2>&1 || true
     ok "System packages installed"
 fi
 
-mkdir -p "${BRIDGE_DIR}"
-
-# Download bridge files pinned to the same release tag (not main) for reproducibility
-BRIDGE_BASE="https://raw.githubusercontent.com/${PIDOG_REPO}/${ZENII_VERSION}/bridge"
-BRIDGE_FILES="__init__.py __main__.py config.py zenii_client.py hardware.py voice.py action_parser.py bridge.py requirements.txt"
-
-mkdir -p "${BRIDGE_DIR}/bridge"
-for f in ${BRIDGE_FILES}; do
-    download_file "${BRIDGE_BASE}/${f}" "${BRIDGE_DIR}/bridge/${f}"
-done
-ok "Bridge files downloaded to ${BRIDGE_DIR}/bridge/"
+# Clone the git repo so the bridge stays updatable via git pull + restart_bridge.sh.
+# If the directory already exists as a repo, update it instead.
+if [[ -d "${BRIDGE_DIR}/.git" ]]; then
+    info "Updating existing bridge repo at ${BRIDGE_DIR}..."
+    git -C "${BRIDGE_DIR}" pull --ff-only || {
+        BRANCH=$(git -C "${BRIDGE_DIR}" rev-parse --abbrev-ref HEAD)
+        git -C "${BRIDGE_DIR}" fetch origin
+        git -C "${BRIDGE_DIR}" reset --hard "origin/${BRANCH}"
+    }
+    ok "Bridge repo updated ($(git -C "${BRIDGE_DIR}" rev-parse --short HEAD))"
+else
+    info "Cloning bridge repo to ${BRIDGE_DIR}..."
+    git clone "https://github.com/${PIDOG_REPO}.git" "${BRIDGE_DIR}"
+    ok "Bridge repo cloned to ${BRIDGE_DIR} ($(git -C "${BRIDGE_DIR}" rev-parse --short HEAD))"
+fi
+ok "Bridge files at ${BRIDGE_DIR}/bridge/"
 
 # Create virtual environment and install dependencies
 info "Creating Python virtual environment..."

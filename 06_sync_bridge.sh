@@ -2,17 +2,17 @@
 # =============================================================================
 # Zenii PiDog2 — Sync Bridge Files to Pi
 #
-# Copies the current go2market/pidog/bridge/ checkout to the Pi's runtime
-# directory (/home/<user>/pidog-zenii/bridge) and optionally restarts the
+# Copies the current bridge/ checkout to the Pi's runtime
+# directory (~zenii-pidog/bridge) and optionally restarts the
 # pidog-bridge systemd service.
 #
-# Usage (from repo root or go2market/pidog/):
+# Usage (from repo root):
 #   bash 06_sync_bridge.sh pi@<PIDOG_IP>
-#   BRIDGE_REMOTE_DIR=/home/neil/pidog-zenii bash 06_sync_bridge.sh pi@<PIDOG_IP>
+#   BRIDGE_REMOTE_DIR=/home/neil/zenii-pidog bash 06_sync_bridge.sh pi@<PIDOG_IP>
 #   RESTART=false bash 06_sync_bridge.sh pi@<PIDOG_IP>               # sync only
 #
 # Environment:
-#   BRIDGE_REMOTE_DIR  Remote runtime dir (default: /home/<remote-user>/pidog-zenii)
+#   BRIDGE_REMOTE_DIR  Remote runtime dir (default: /home/<remote-user>/zenii-pidog)
 #   RESTART            Restart service after sync (default: true)
 # =============================================================================
 set -euo pipefail
@@ -56,7 +56,7 @@ if [[ "${REMOTE_USER}" == "${REMOTE}" ]]; then
     # No '@' — means just an IP/hostname, use current user
     REMOTE_USER="${USER}"
 fi
-BRIDGE_REMOTE_DIR="${BRIDGE_REMOTE_DIR:-/home/${REMOTE_USER}/pidog-zenii}"
+BRIDGE_REMOTE_DIR="${BRIDGE_REMOTE_DIR:-/home/${REMOTE_USER}/zenii-pidog}"
 REMOTE_BRIDGE="${BRIDGE_REMOTE_DIR}/bridge"
 
 # =============================================================================

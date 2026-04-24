@@ -5,7 +5,7 @@
 # Demonstrates every major capability that Zenii adds to PiDog,
 # contrasted with what stock PiDog can do (nothing, for most of these).
 #
-# Some tests require the bridge to be running (python3 -m bridge in /home/pi/pidog-zenii/)
+# Some tests require the bridge to be running (python3 -m bridge in ~/zenii-pidog/)
 # for physical actions. Those are marked [BRIDGE]. Without the bridge,
 # the API calls still succeed — you just won't see the dog move.
 #

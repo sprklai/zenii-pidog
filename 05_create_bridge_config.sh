@@ -2,7 +2,7 @@
 # =============================================================================
 # Zenii PiDog2 — Create bridge_config.toml
 #
-# Generates /home/neil/pidog-zenii/bridge_config.toml (or $BRIDGE_DIR) with
+# Generates ~/zenii-pidog/bridge_config.toml (or $BRIDGE_DIR) with
 # real values pulled from the Zenii credential store + current environment.
 # Covers all three voice providers: text, local, pipecat (Deepgram+Cartesia/ElevenLabs).
 #
@@ -19,7 +19,7 @@ set -uo pipefail
 
 # --- Config (override via environment) ---
 ZENII_URL="${ZENII_URL:-http://127.0.0.1:18981}"
-BRIDGE_DIR="${BRIDGE_DIR:-/home/neil/pidog-zenii}"
+BRIDGE_DIR="${BRIDGE_DIR:-${HOME}/zenii-pidog}"
 ZENII_TOKEN="${ZENII_TOKEN:-}"
 CONFIG_PATH="${BRIDGE_DIR}/bridge_config.toml"
 CURL_TIMEOUT=10
@@ -88,7 +88,7 @@ echo ""
 
 if [[ ! -d "${BRIDGE_DIR}" ]]; then
     fail "Bridge dir not found: ${BRIDGE_DIR}"
-    info "Run 01_pidog_setup_script.sh first, or set: export BRIDGE_DIR=/path/to/pidog-zenii"
+    info "Run 01_pidog_setup_script.sh first, or set: export BRIDGE_DIR=/path/to/zenii-pidog"
     exit 1
 fi
 pass "Bridge dir: ${BRIDGE_DIR}"

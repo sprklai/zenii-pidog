@@ -20,7 +20,7 @@ set -uo pipefail
 
 # --- Config (override via environment) ---
 ZENII_URL="${ZENII_URL:-http://127.0.0.1:18981}"
-BRIDGE_DIR="${BRIDGE_DIR:-${HOME}/pidog-zenii}"
+BRIDGE_DIR="${BRIDGE_DIR:-${HOME}/zenii-pidog}"
 CURL_TIMEOUT=10
 PASS=0
 FAIL=0
