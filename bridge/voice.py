@@ -345,8 +345,8 @@ class CloudVoice(VoiceInterface):
         silence_count = 0
         wait_count = 0
 
-        logger.info("MIC listening (VAD, device=%s), speak now...",
-                    device if device is not None else "default")
+        logger.info("MIC listening (VAD threshold RMS=%d, device=%s), speak now...",
+                    rms_threshold, device if device is not None else "default")
 
         try:
             with sd.InputStream(
@@ -759,6 +759,8 @@ class CloudVoice(VoiceInterface):
                         )
                         # Stop sending after 1.2s of post-speech silence
                         silence_end_subs = int(1200 / sub_ms)
+                        logger.info("MIC listening (VAD threshold RMS=%d, timeout=%.1fs)",
+                                    rms_threshold, self._config.listen_timeout_secs)
 
                         pending: list[bytes] = []   # sub-chunks not yet sent
                         speech_started = False
