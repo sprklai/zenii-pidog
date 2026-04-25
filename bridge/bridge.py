@@ -571,6 +571,7 @@ class PiDogZeniiBridge:
                 spoke = False
                 stop_scroll = threading.Event()
                 timed_out = False
+                response_sentences: list[str] = []
                 try:
                     async with asyncio.timeout(self._config.ws_chat_timeout_secs):
                         async for sentence in self._ws_chat_stream(prompt):
@@ -586,8 +587,11 @@ class PiDogZeniiBridge:
                                         )
                                     )
                                 spoke = True
+                            response_sentences.append(sentence)
                             logger.info("Speaking: %s", sentence)
                             await self._voice.speak(sentence)
+                    if response_sentences:
+                        logger.info("<<< LLM: %s", " ".join(response_sentences))
                 except TimeoutError:
                     timed_out = True
                     logger.warning(
@@ -679,7 +683,7 @@ class PiDogZeniiBridge:
                first sentence arrives (~0.8s) → TTS starts
                remaining sentences yield as LLM streams
         """
-        logger.info(">>> WS: %s", prompt[:120])
+        logger.info(">>> LLM prompt:\n%s", prompt)
         # ws_send_prompt handles reconnect internally under _ws_lock — no pre-call needed.
         await self._client.ws_send_prompt(prompt, self._session_id)
 

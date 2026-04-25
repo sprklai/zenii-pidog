@@ -35,17 +35,27 @@ class _ColorFormatter(logging.Formatter):
 
     # Prefixes that mark specific pipeline stages
     _STAGE_COLORS = {
-        "User:":         "\033[92m",   # bright green  — STT captured speech
-        "Speaking:":     "\033[95m",   # bright magenta — TTS output
-        ">>>":           "\033[93m",   # bright yellow  — sending to LLM
-        "<<<":           "\033[96m",   # bright cyan    — LLM response
-        "AI raw:":       "\033[96m",   # bright cyan
-        "LLM smoke":     "\033[96m",   # bright cyan
-        "Queuing action:":  "\033[94m",  # bright blue  — action queued
-        "Executing action:": "\033[94m", # bright blue  — action running
-        "Queuing LED:":     "\033[34m",  # blue         — LED queued
-        "Executing LED:":   "\033[34m",  # blue         — LED running
-        "No clean text":    "\033[91m",  # bright red   — warning
+        # STT pipeline
+        "User:":            "\033[92m",   # bright green  — STT captured speech
+        "STT FINAL":        "\033[92m",   # bright green  — cloud STT final transcript
+        "STT interim":      "\033[32m",   # green         — cloud STT interim result
+        "MIC listen":       "\033[32m",   # green         — mic active / listening
+        "MIC speech":       "\033[92m",   # bright green  — VAD triggered
+        "Connecting to":    "\033[32m",   # green         — connecting to cloud STT
+        # LLM pipeline
+        ">>> LLM":          "\033[93m",   # bright yellow  — prompt sent to LLM
+        ">>>":              "\033[93m",   # bright yellow  — sending to LLM (legacy)
+        "<<< LLM:":         "\033[96m",   # bright cyan    — LLM response text
+        "<<<":              "\033[96m",   # bright cyan    — LLM response (legacy)
+        "AI raw:":          "\033[96m",   # bright cyan
+        "LLM smoke":        "\033[96m",   # bright cyan
+        # TTS / action pipeline
+        "Speaking:":        "\033[95m",   # bright magenta — TTS output
+        "Queuing action:":  "\033[94m",   # bright blue    — action queued
+        "Executing action:": "\033[94m",  # bright blue    — action running
+        "Queuing LED:":     "\033[34m",   # blue           — LED queued
+        "Executing LED:":   "\033[34m",   # blue           — LED running
+        "No clean text":    "\033[91m",   # bright red     — warning
     }
 
     _LEVEL_COLORS = {
