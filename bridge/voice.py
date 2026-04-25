@@ -256,6 +256,26 @@ class CloudVoice(VoiceInterface):
     # infinite retry loop.
     _STT_FAULT_LIMIT = 5
 
+    # Provider dispatch registries — adding a provider means adding one line here
+    # plus the implementation method. STT and TTS are selected independently.
+    _STT_METHODS: dict[str, str] = {
+        "groq":     "_stt_groq_batch",
+        "deepgram": "_stt_deepgram_streaming",
+        "sarvam":   "_stt_sarvam_streaming",
+        "azure":    "_stt_azure_batch",
+        "google":   "_stt_google_batch",
+    }
+    # Streaming TTS: method drives its own playback and returns None.
+    _TTS_STREAMING_METHODS: dict[str, str] = {
+        "cartesia": "_tts_cartesia_streaming",
+    }
+    # Batch TTS: method returns raw PCM bytes played via _play_audio_sync.
+    _TTS_BATCH_METHODS: dict[str, str] = {
+        "elevenlabs": "_tts_elevenlabs",
+        "azure":      "_tts_azure",
+        "google":     "_tts_google",
+    }
+
     def __init__(self, config: BridgeConfig, executor: ThreadPoolExecutor) -> None:
         self._config = config
         self._executor = executor
@@ -275,10 +295,17 @@ class CloudVoice(VoiceInterface):
                 "  Set tts_api_key in bridge_config.toml  or  PIPECAT_TTS_API_KEY env var."
             )
 
+        # Log full STT/TTS configuration once at startup so silent-failure modes
+        # (wrong provider name, missing stt_model, blank key) show up in one line.
         logger.info(
-            "CloudVoice ready (STT=%s, TTS=%s)",
+            "CloudVoice: STT provider=%s model=%s key=%s | TTS provider=%s model=%s voice=%s key=%s",
             config.pipecat_stt_provider,
+            config.pipecat_stt_model or "(default)",
+            "set" if config.pipecat_stt_api_key else "MISSING",
             config.pipecat_tts_provider,
+            config.pipecat_tts_model or "(default)",
+            config.pipecat_tts_voice or "(default)",
+            "set" if config.pipecat_tts_api_key else "MISSING",
         )
 
     def _get_http(self) -> aiohttp.ClientSession:
@@ -292,20 +319,15 @@ class CloudVoice(VoiceInterface):
     async def listen(self) -> str | None:
         """Listen for speech and return transcript. None = no speech detected."""
         provider = self._config.pipecat_stt_provider.lower()
+        method_name = self._STT_METHODS.get(provider)
+        if method_name is None:
+            logger.warning(
+                "Unknown STT provider: %r (valid: %s)",
+                provider, ", ".join(sorted(self._STT_METHODS)),
+            )
+            return None
         try:
-            if provider == "groq":
-                result = await self._stt_groq_batch()
-            elif provider == "deepgram":
-                result = await self._stt_deepgram_streaming()
-            elif provider == "sarvam":
-                result = await self._stt_sarvam_streaming()
-            elif provider == "azure":
-                result = await self._stt_azure_batch()
-            elif provider == "google":
-                result = await self._stt_google_batch()
-            else:
-                logger.warning("Unknown STT provider: %s", provider)
-                return None
+            result = await getattr(self, method_name)()
             self._stt_fault_count = 0
             return result
         except _SttConfigError as exc:
@@ -941,22 +963,24 @@ class CloudVoice(VoiceInterface):
         async with self._speak_lock:
             provider = self._config.pipecat_tts_provider.lower()
             try:
-                if provider == "cartesia":
+                stream_method = self._TTS_STREAMING_METHODS.get(provider)
+                if stream_method is not None:
                     # Streaming path: first audio chunk starts playing ~50-100ms
                     # after the request is sent instead of waiting for full download.
-                    await self._tts_cartesia_streaming(clean)
+                    await getattr(self, stream_method)(clean)
                     return
 
-                if provider == "elevenlabs":
-                    audio_bytes = await self._tts_elevenlabs(clean)
-                elif provider == "azure":
-                    audio_bytes = await self._tts_azure(clean)
-                elif provider == "google":
-                    audio_bytes = await self._tts_google(clean)
-                else:
-                    logger.warning("Unknown TTS provider: %s", provider)
+                batch_method = self._TTS_BATCH_METHODS.get(provider)
+                if batch_method is None:
+                    valid = sorted(
+                        {*self._TTS_STREAMING_METHODS, *self._TTS_BATCH_METHODS}
+                    )
+                    logger.warning(
+                        "Unknown TTS provider: %r (valid: %s)", provider, ", ".join(valid)
+                    )
                     return
 
+                audio_bytes = await getattr(self, batch_method)(clean)
                 if audio_bytes:
                     loop = asyncio.get_running_loop()
                     await loop.run_in_executor(

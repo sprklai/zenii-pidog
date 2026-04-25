@@ -111,22 +111,16 @@ echo -e "${CYAN}${BOLD}[1]${NC} ${BOLD}Voice Provider${NC}"
 echo ""
 echo -e "  ${BOLD}Select voice provider for bridge_config.toml:${NC}"
 echo ""
-echo -e "  ${CYAN}1)${NC} ${BOLD}text${NC}        — stdin/stdout (SSH, dev)"
-echo -e "  ${CYAN}2)${NC} ${BOLD}local${NC}       — Vosk STT + Piper TTS (offline)"
-echo -e "  ${CYAN}3)${NC} ${BOLD}pipecat-dc${NC}  — Deepgram STT + Cartesia TTS (low-latency)"
-echo -e "  ${CYAN}4)${NC} ${BOLD}pipecat-de${NC}  — Deepgram STT + ElevenLabs TTS (voice cloning)"
-echo -e "  ${CYAN}5)${NC} ${BOLD}pipecat-sc${NC}  — Sarvam AI STT + Cartesia TTS (Indian English)"
-echo -e "  ${CYAN}6)${NC} ${BOLD}pipecat-se${NC}  — Sarvam AI STT + ElevenLabs TTS (Indian English)"
+echo -e "  ${CYAN}1)${NC} ${BOLD}text${NC}     — stdin/stdout (SSH, dev)"
+echo -e "  ${CYAN}2)${NC} ${BOLD}local${NC}    — Vosk STT + Piper TTS (offline)"
+echo -e "  ${CYAN}3)${NC} ${BOLD}pipecat${NC}  — cloud STT + cloud TTS (pick providers next)"
 echo ""
-read -rp "  Select [1-6]: " CHOICE
+read -rp "  Select [1-3]: " CHOICE
 
 case "${CHOICE}" in
-    1) VOICE_PROVIDER="text"       ;;
-    2) VOICE_PROVIDER="local"      ;;
-    3) VOICE_PROVIDER="pipecat-dc" ;;
-    4) VOICE_PROVIDER="pipecat-de" ;;
-    5) VOICE_PROVIDER="pipecat-sc" ;;
-    6) VOICE_PROVIDER="pipecat-se" ;;
+    1) VOICE_PROVIDER="text"    ;;
+    2) VOICE_PROVIDER="local"   ;;
+    3) VOICE_PROVIDER="pipecat" ;;
     *)
         warn "Invalid choice — defaulting to text"
         VOICE_PROVIDER="text"
@@ -137,34 +131,65 @@ echo ""
 pass "Voice provider: ${VOICE_PROVIDER}"
 
 # =============================================================================
-# Collect API keys (pipecat providers only)
+# Collect STT + TTS provider, model, voice, API keys (pipecat only)
+# STT and TTS are chosen independently — any STT can pair with any TTS.
 # =============================================================================
-STT_API_KEY=""
-TTS_API_KEY=""
-TTS_VOICE=""
 STT_PROVIDER=""
-TTS_PROVIDER=""
+STT_API_KEY=""
+STT_MODEL=""
 SARVAM_LANGUAGE=""
+TTS_PROVIDER=""
+TTS_API_KEY=""
+TTS_MODEL=""
+TTS_VOICE=""
 
-if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
+if [[ "${VOICE_PROVIDER}" == "pipecat" ]]; then
+    # ---- [2] STT provider ----
     echo ""
-    echo -e "${CYAN}${BOLD}[2]${NC} ${BOLD}API Keys${NC}"
+    echo -e "${CYAN}${BOLD}[2]${NC} ${BOLD}STT Provider${NC}"
     echo ""
+    echo -e "  ${CYAN}1)${NC} ${BOLD}deepgram${NC}  — Nova-2 WebSocket streaming (low latency, built-in VAD)"
+    echo -e "  ${CYAN}2)${NC} ${BOLD}sarvam${NC}    — Saaras streaming (Indian English + 10 Indian languages)"
+    echo -e "  ${CYAN}3)${NC} ${BOLD}groq${NC}      — Whisper large-v3-turbo (batch)"
+    echo -e "  ${CYAN}4)${NC} ${BOLD}azure${NC}     — Azure Speech (batch)"
+    echo -e "  ${CYAN}5)${NC} ${BOLD}google${NC}    — Google Cloud Speech (batch)"
+    echo ""
+    read -rp "  Select [1-5]: " STT_CHOICE
 
-    # Derive STT and TTS provider from the combined choice
-    case "${VOICE_PROVIDER}" in
-        pipecat-dc) STT_PROVIDER="deepgram";  TTS_PROVIDER="cartesia"   ;;
-        pipecat-de) STT_PROVIDER="deepgram";  TTS_PROVIDER="elevenlabs" ;;
-        pipecat-sc) STT_PROVIDER="sarvam";    TTS_PROVIDER="cartesia"   ;;
-        pipecat-se) STT_PROVIDER="sarvam";    TTS_PROVIDER="elevenlabs" ;;
+    case "${STT_CHOICE}" in
+        1) STT_PROVIDER="deepgram"; DEFAULT_STT_MODEL="nova-2"                 ;;
+        2) STT_PROVIDER="sarvam";   DEFAULT_STT_MODEL="saaras:v3"              ;;
+        3) STT_PROVIDER="groq";     DEFAULT_STT_MODEL="whisper-large-v3-turbo" ;;
+        4) STT_PROVIDER="azure";    DEFAULT_STT_MODEL="eastus"                 ;;
+        5) STT_PROVIDER="google";   DEFAULT_STT_MODEL=""                       ;;
+        *)
+            warn "Invalid choice — defaulting to deepgram"
+            STT_PROVIDER="deepgram"; DEFAULT_STT_MODEL="nova-2"
+            ;;
     esac
-
     STT_DISPLAY="${STT_PROVIDER^}"
+    pass "STT provider: ${STT_PROVIDER}"
 
-    # --- STT API Key ---
+    # STT model. Required for Sarvam (code refuses to run without it);
+    # optional-with-defaults for others.
+    if [[ -n "${PIPECAT_STT_MODEL:-}" ]]; then
+        STT_MODEL="${PIPECAT_STT_MODEL}"
+        pass "STT model: from environment (${STT_MODEL})"
+    else
+        if [[ -n "${DEFAULT_STT_MODEL}" ]]; then
+            echo -n "  ${STT_DISPLAY} model [default: ${DEFAULT_STT_MODEL}]: "
+        else
+            echo -n "  ${STT_DISPLAY} model [leave blank to use provider default]: "
+        fi
+        read -r STT_MODEL_INPUT
+        STT_MODEL="${STT_MODEL_INPUT:-${DEFAULT_STT_MODEL}}"
+        [[ -n "${STT_MODEL}" ]] && pass "STT model: ${STT_MODEL}"
+    fi
+
+    # STT API key
     if [[ -n "${PIPECAT_STT_API_KEY:-}" ]]; then
         STT_API_KEY="${PIPECAT_STT_API_KEY}"
-        pass "${STT_DISPLAY} STT key: from environment (PIPECAT_STT_API_KEY)"
+        pass "${STT_DISPLAY} key: from environment (PIPECAT_STT_API_KEY)"
     else
         if "${DAEMON_UP}" && cred_exists "api_key:${STT_PROVIDER}"; then
             info "${STT_DISPLAY} key found in credential store (daemon cannot return raw values)"
@@ -176,12 +201,11 @@ if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
             STT_API_KEY="${STT_KEY_INPUT}"
             pass "${STT_DISPLAY} key: entered"
         else
-            STT_API_KEY=""
             warn "No ${STT_DISPLAY} key entered — STT will fail until you edit bridge_config.toml"
         fi
     fi
 
-    # --- Sarvam language (only if using Sarvam STT) ---
+    # Sarvam-specific language
     if [[ "${STT_PROVIDER}" == "sarvam" ]]; then
         echo ""
         echo -e "  ${BOLD}Sarvam AI language code${NC}"
@@ -196,55 +220,90 @@ if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
         fi
     fi
 
+    # ---- [3] TTS provider ----
     echo ""
+    echo -e "${CYAN}${BOLD}[3]${NC} ${BOLD}TTS Provider${NC}"
+    echo ""
+    echo -e "  ${CYAN}1)${NC} ${BOLD}cartesia${NC}    — Cartesia Sonic (streaming, low-latency)"
+    echo -e "  ${CYAN}2)${NC} ${BOLD}elevenlabs${NC}  — ElevenLabs (voice cloning)"
+    echo -e "  ${CYAN}3)${NC} ${BOLD}azure${NC}       — Azure Neural TTS"
+    echo -e "  ${CYAN}4)${NC} ${BOLD}google${NC}      — Google Cloud TTS"
+    echo ""
+    read -rp "  Select [1-4]: " TTS_CHOICE
 
-    # --- TTS API Key ---
+    case "${TTS_CHOICE}" in
+        1) TTS_PROVIDER="cartesia";   DEFAULT_TTS_MODEL="sonic-english";         DEFAULT_TTS_VOICE="a0e99841-438c-4a64-b679-ae501e7d6091" ;;
+        2) TTS_PROVIDER="elevenlabs"; DEFAULT_TTS_MODEL="eleven_monolingual_v1"; DEFAULT_TTS_VOICE="" ;;
+        3) TTS_PROVIDER="azure";      DEFAULT_TTS_MODEL="eastus";                DEFAULT_TTS_VOICE="en-US-JennyNeural" ;;
+        4) TTS_PROVIDER="google";     DEFAULT_TTS_MODEL="";                      DEFAULT_TTS_VOICE="en-US-Standard-C" ;;
+        *)
+            warn "Invalid choice — defaulting to cartesia"
+            TTS_PROVIDER="cartesia"; DEFAULT_TTS_MODEL="sonic-english"; DEFAULT_TTS_VOICE="a0e99841-438c-4a64-b679-ae501e7d6091"
+            ;;
+    esac
     TTS_DISPLAY="${TTS_PROVIDER^}"
-    CRED_KEY="api_key:${TTS_PROVIDER}"
+    pass "TTS provider: ${TTS_PROVIDER}"
 
+    # TTS model (Azure: region. Cartesia/ElevenLabs: model id. Google: unused.)
+    if [[ -n "${PIPECAT_TTS_MODEL:-}" ]]; then
+        TTS_MODEL="${PIPECAT_TTS_MODEL}"
+        pass "TTS model: from environment (${TTS_MODEL})"
+    else
+        if [[ -n "${DEFAULT_TTS_MODEL}" ]]; then
+            echo -n "  ${TTS_DISPLAY} model [default: ${DEFAULT_TTS_MODEL}]: "
+        else
+            echo -n "  ${TTS_DISPLAY} model [leave blank to use provider default]: "
+        fi
+        read -r TTS_MODEL_INPUT
+        TTS_MODEL="${TTS_MODEL_INPUT:-${DEFAULT_TTS_MODEL}}"
+        [[ -n "${TTS_MODEL}" ]] && pass "TTS model: ${TTS_MODEL}"
+    fi
+
+    # TTS API key
     if [[ -n "${PIPECAT_TTS_API_KEY:-}" ]]; then
         TTS_API_KEY="${PIPECAT_TTS_API_KEY}"
         pass "${TTS_DISPLAY} key: from environment (PIPECAT_TTS_API_KEY)"
     else
-        if "${DAEMON_UP}" && cred_exists "${CRED_KEY}"; then
+        if "${DAEMON_UP}" && cred_exists "api_key:${TTS_PROVIDER}"; then
             info "${TTS_DISPLAY} key found in credential store (daemon cannot return raw values)"
         fi
         echo -n "  Enter ${TTS_DISPLAY} API key: "
-        read -rs TS_KEY
+        read -rs TTS_KEY_INPUT
         echo ""
-        if [[ -n "${TS_KEY}" ]]; then
-            TTS_API_KEY="${TS_KEY}"
+        if [[ -n "${TTS_KEY_INPUT}" ]]; then
+            TTS_API_KEY="${TTS_KEY_INPUT}"
             pass "${TTS_DISPLAY} key: entered"
         else
-            TTS_API_KEY=""
             warn "No ${TTS_DISPLAY} key entered — TTS will fail until you edit bridge_config.toml"
         fi
     fi
 
-    echo ""
-
-    # --- TTS Voice ID ---
+    # TTS voice ID
     if [[ -n "${PIPECAT_TTS_VOICE:-}" ]]; then
         TTS_VOICE="${PIPECAT_TTS_VOICE}"
-        pass "TTS voice ID: from environment"
+        pass "TTS voice: from environment (${TTS_VOICE})"
     else
-        if [[ "${TTS_PROVIDER}" == "cartesia" ]]; then
-            DEFAULT_VOICE="a0e99841-438c-4a64-b679-ae501e7d6091"
-            echo -e "  ${DIM}Cartesia voice ID — find at play.cartesia.ai/voices${NC}"
-            echo -n "  Enter voice ID [default: ${DEFAULT_VOICE} (Sonic English)]: "
-        else
-            DEFAULT_VOICE=""
-            echo -e "  ${DIM}ElevenLabs voice ID — find at elevenlabs.io/voice-library${NC}"
-            echo -n "  Enter voice ID [leave blank to use account default]: "
-        fi
-        read -r V_ID
-        if [[ -n "${V_ID}" ]]; then
-            TTS_VOICE="${V_ID}"
-            pass "TTS voice ID: ${TTS_VOICE}"
-        elif [[ -n "${DEFAULT_VOICE}" ]]; then
-            TTS_VOICE="${DEFAULT_VOICE}"
-            pass "TTS voice ID: ${TTS_VOICE} (default)"
-        fi
+        case "${TTS_PROVIDER}" in
+            cartesia)
+                echo -e "  ${DIM}Cartesia voice ID — find at play.cartesia.ai/voices${NC}"
+                echo -n "  Voice ID [default: ${DEFAULT_TTS_VOICE} (Sonic English)]: "
+                ;;
+            elevenlabs)
+                echo -e "  ${DIM}ElevenLabs voice ID — find at elevenlabs.io/voice-library${NC}"
+                echo -n "  Voice ID [leave blank to use account default]: "
+                ;;
+            azure)
+                echo -e "  ${DIM}Azure neural voice name (e.g. en-US-JennyNeural, en-IN-NeerjaNeural)${NC}"
+                echo -n "  Voice name [default: ${DEFAULT_TTS_VOICE}]: "
+                ;;
+            google)
+                echo -e "  ${DIM}Google Cloud TTS voice (e.g. en-US-Standard-C, en-IN-Wavenet-A)${NC}"
+                echo -n "  Voice name [default: ${DEFAULT_TTS_VOICE}]: "
+                ;;
+        esac
+        read -r TTS_VOICE_INPUT
+        TTS_VOICE="${TTS_VOICE_INPUT:-${DEFAULT_TTS_VOICE}}"
+        [[ -n "${TTS_VOICE}" ]] && pass "TTS voice: ${TTS_VOICE}"
     fi
 fi
 
@@ -252,7 +311,7 @@ fi
 # Hardware options
 # =============================================================================
 echo ""
-echo -e "${CYAN}${BOLD}[3]${NC} ${BOLD}Hardware Mode${NC}"
+echo -e "${CYAN}${BOLD}[4]${NC} ${BOLD}Hardware Mode${NC}"
 echo ""
 echo -e "  ${CYAN}1)${NC} ${BOLD}real${NC}      — physical PiDog2 connected"
 echo -e "  ${CYAN}2)${NC} ${BOLD}simulate${NC}  — simulated (dev machine, no PiDog)"
@@ -275,7 +334,7 @@ PIPER_BINARY="piper"
 
 if [[ "${VOICE_PROVIDER}" == "local" ]]; then
     echo ""
-    echo -e "${CYAN}${BOLD}[4]${NC} ${BOLD}Local Model Paths${NC}"
+    echo -e "${CYAN}${BOLD}[5]${NC} ${BOLD}Local Model Paths${NC}"
     echo ""
 
     DEFAULT_VOSK="${BRIDGE_DIR}/models/vosk-model-small-en-us-0.15"
@@ -302,7 +361,7 @@ fi
 # AI Provider (configures the Zenii daemon's LLM at bridge startup)
 # =============================================================================
 echo ""
-echo -e "${CYAN}${BOLD}[5]${NC} ${BOLD}AI Provider${NC}"
+echo -e "${CYAN}${BOLD}[6]${NC} ${BOLD}AI Provider${NC}"
 echo ""
 echo -e "  ${BOLD}Which AI provider should the PiDog use?${NC}"
 echo ""
@@ -368,7 +427,7 @@ esac
 # Write bridge_config.toml
 # =============================================================================
 echo ""
-echo -e "${CYAN}${BOLD}[6]${NC} ${BOLD}Writing Config${NC}"
+echo -e "${CYAN}${BOLD}[7]${NC} ${BOLD}Writing Config${NC}"
 echo ""
 
 # Back up existing config if present
@@ -377,14 +436,6 @@ if [[ -f "${CONFIG_PATH}" ]]; then
     cp "${CONFIG_PATH}" "${BACKUP}"
     info "Backed up existing config to: ${BACKUP}"
 fi
-
-# Determine voice provider string for TOML
-case "${VOICE_PROVIDER}" in
-    "text")       TOML_PROVIDER="text"    ;;
-    "local")      TOML_PROVIDER="local"   ;;
-    pipecat-*)    TOML_PROVIDER="pipecat" ;;
-    *)            TOML_PROVIDER="text"    ;;
-esac
 
 # Build TOML
 {
@@ -409,7 +460,7 @@ esac
     fi
     echo ""
     echo "[voice]"
-    echo "provider = \"${TOML_PROVIDER}\""
+    echo "provider = \"${VOICE_PROVIDER}\""
 
     if [[ "${VOICE_PROVIDER}" == "local" ]]; then
         echo ""
@@ -419,15 +470,21 @@ esac
         echo "tts_binary = \"${PIPER_BINARY}\""
     fi
 
-    if [[ "${VOICE_PROVIDER}" == pipecat-* ]]; then
+    if [[ "${VOICE_PROVIDER}" == "pipecat" ]]; then
         echo ""
         echo "[voice.pipecat]"
         echo "stt_provider = \"${STT_PROVIDER}\""
+        echo "stt_api_key  = \"${STT_API_KEY}\""
+        if [[ -n "${STT_MODEL}" ]]; then
+            echo "stt_model    = \"${STT_MODEL}\""
+        fi
         echo "tts_provider = \"${TTS_PROVIDER}\""
-        echo "stt_api_key = \"${STT_API_KEY}\""
-        echo "tts_api_key = \"${TTS_API_KEY}\""
+        echo "tts_api_key  = \"${TTS_API_KEY}\""
+        if [[ -n "${TTS_MODEL}" ]]; then
+            echo "tts_model    = \"${TTS_MODEL}\""
+        fi
         if [[ -n "${TTS_VOICE}" ]]; then
-            echo "tts_voice = \"${TTS_VOICE}\""
+            echo "tts_voice    = \"${TTS_VOICE}\""
         fi
         if [[ -n "${SARVAM_LANGUAGE}" ]]; then
             echo "sarvam_language_code = \"${SARVAM_LANGUAGE}\""
@@ -440,7 +497,7 @@ esac
     echo "#                                 # PiDog I2S mic: run 'arecord -l' to find device index"
     echo "# speaker_device = -1             # sounddevice output index; -1 = system default"
     echo "# listen_timeout_secs = 5.0       # recording window per utterance (seconds)"
-    echo "# silence_threshold = 0.3         # 0.0-1.0 fraction of int16 max; filters ambient noise"
+    echo "# silence_threshold = 0.02        # 0.0-1.0 fraction of int16 max; raise (e.g. 0.05) in noisy rooms"
     echo "# sensor_interval_secs = 2.0"
     echo "# memory_throttle_secs = 30.0"
     echo "# obstacle_alert_cm = 15"
@@ -464,7 +521,7 @@ echo ""
 # =============================================================================
 # Run instructions
 # =============================================================================
-echo -e "${CYAN}${BOLD}[7]${NC} ${BOLD}Run${NC}"
+echo -e "${CYAN}${BOLD}[8]${NC} ${BOLD}Run${NC}"
 echo ""
 echo -e "  ${BOLD}Start the bridge with this config:${NC}"
 echo ""
