@@ -506,6 +506,15 @@ fi
     echo "# action_timeout_secs = 10.0"
     echo "# sensor_read_timeout_secs = 5.0"
     echo "# default_action_speed = 80"
+    echo ""
+    echo "# LCD1602 display (optional — requires I2C wiring + smbus2)"
+    echo "# pip install smbus2   # or: sudo apt install python3-smbus"
+    echo "# Run 'i2cdetect -y 1' to confirm I2C address (usually 0x27 or 0x3F)"
+    echo "# [lcd]"
+    echo "# enabled = true"
+    echo "# address = 0x27          # PCF8574T=0x27, PCF8574AT=0x3F"
+    echo "# bus = 1                 # I2C bus (1 on all modern RPi models)"
+    echo "# scroll_delay = 0.35     # seconds between scroll steps"
 
 } > "${CONFIG_PATH}"
 

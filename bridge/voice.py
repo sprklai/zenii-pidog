@@ -109,7 +109,7 @@ class LocalVoice(VoiceInterface):
         self._recognizer.Reset()
         chunk_ms = 80
         chunk_frames = int(self._sample_rate * chunk_ms / 1000)
-        rms_threshold = max(300, int(self._config.silence_threshold * 32767 * 0.5))
+        rms_threshold = max(100, int(self._config.silence_threshold * 32767 * 0.5))
         wait_limit = int(self._config.listen_timeout_secs * 1000 / chunk_ms)
         silence_end_chunks = int(1200 / chunk_ms)  # 1.2s of silence ends utterance
 
@@ -355,17 +355,18 @@ class CloudVoice(VoiceInterface):
         device = self._config.mic_device if self._config.mic_device >= 0 else None
         chunk_ms = 80
         chunk_frames = int(sample_rate * chunk_ms / 1000)
-        # Use a lower threshold than the old batch approach — Indian accent speech
-        # can have lower energy; 300 RMS is a safe floor for real speech.
-        rms_threshold = max(300, int(self._config.silence_threshold * 32767 * 0.5))
+        rms_threshold = max(100, int(self._config.silence_threshold * 32767 * 0.5))
         wait_limit = int(self._config.listen_timeout_secs * 1000 / chunk_ms)
         # Stop after 1.2s of silence following speech
         silence_end_chunks = int(1200 / chunk_ms)
+        # Log peak RMS once per second so mic level is visible in logs
+        log_interval = int(1000 / chunk_ms)
 
         frames: list[bytes] = []
         speech_started = False
         silence_count = 0
         wait_count = 0
+        peak_rms = 0
 
         logger.info("MIC listening (VAD threshold RMS=%d, device=%s), speak now...",
                     rms_threshold, device if device is not None else "default")
@@ -383,13 +384,29 @@ class CloudVoice(VoiceInterface):
                     rms = int(np.sqrt(np.mean(chunk.astype("float32") ** 2)))
 
                     if not speech_started:
+                        peak_rms = max(peak_rms, rms)
                         wait_count += 1
+                        if wait_count % log_interval == 0:
+                            logger.info(
+                                "MIC waiting for speech: peak RMS=%d (threshold=%d) "
+                                "— if this is near 0, check mic_device in config",
+                                peak_rms, rms_threshold,
+                            )
+                            peak_rms = 0
                         if rms > rms_threshold:
                             logger.info("MIC speech detected (RMS=%d)", rms)
                             speech_started = True
                             frames.append(chunk.tobytes())
                             silence_count = 0
                         elif wait_count >= wait_limit:
+                            logger.warning(
+                                "VAD timeout: no speech detected in %.1fs "
+                                "(max RMS seen: %d, threshold: %d). "
+                                "If you spoke, lower silence_threshold in bridge_config.toml "
+                                "or set mic_device to the correct device index "
+                                "(run: python3 -c \"import sounddevice; print(sounddevice.query_devices())\")",
+                                self._config.listen_timeout_secs, peak_rms, rms_threshold,
+                            )
                             return None  # timeout — no speech
                     else:
                         frames.append(chunk.tobytes())
@@ -774,13 +791,15 @@ class CloudVoice(VoiceInterface):
                         """Read mic chunks, run energy VAD, send 500ms WAV slices to Sarvam."""
                         loop = asyncio.get_running_loop()
                         rms_threshold = max(
-                            300, int(self._config.silence_threshold * 32767 * 0.5)
+                            100, int(self._config.silence_threshold * 32767 * 0.5)
                         )
                         wait_limit = int(
                             self._config.listen_timeout_secs * 1000 / sub_ms
                         )
                         # Stop sending after 1.2s of post-speech silence
                         silence_end_subs = int(1200 / sub_ms)
+                        # Log peak RMS once per second so mic level is visible in logs
+                        log_interval = int(1000 / sub_ms)  # chunks per second
                         logger.info("MIC listening (VAD threshold RMS=%d, timeout=%.1fs)",
                                     rms_threshold, self._config.listen_timeout_secs)
 
@@ -788,6 +807,7 @@ class CloudVoice(VoiceInterface):
                         speech_started = False
                         silence_count = 0
                         wait_count = 0
+                        peak_rms = 0
 
                         while True:
                             raw = await loop.run_in_executor(self._executor, audio_q.get)
@@ -798,13 +818,30 @@ class CloudVoice(VoiceInterface):
                             rms = int(np.sqrt(np.mean(arr ** 2)))
 
                             if not speech_started:
+                                peak_rms = max(peak_rms, rms)
                                 wait_count += 1
+                                # Log peak RMS every second so mic levels are visible
+                                if wait_count % log_interval == 0:
+                                    logger.info(
+                                        "MIC waiting for speech: peak RMS=%d (threshold=%d) "
+                                        "— if this is near 0, check mic_device in config",
+                                        peak_rms, rms_threshold,
+                                    )
+                                    peak_rms = 0
                                 if rms > rms_threshold:
                                     logger.info("MIC speech detected (RMS=%d)", rms)
                                     speech_started = True
                                     pending.append(raw)
                                     silence_count = 0
                                 elif wait_count >= wait_limit:
+                                    logger.warning(
+                                        "VAD timeout: no speech detected in %.1fs "
+                                        "(max RMS seen: %d, threshold: %d). "
+                                        "If you spoke, lower silence_threshold in bridge_config.toml "
+                                        "or set mic_device to the correct device index "
+                                        "(run: python3 -c \"import sounddevice; print(sounddevice.query_devices())\")",
+                                        self._config.listen_timeout_secs, peak_rms, rms_threshold,
+                                    )
                                     break  # no speech within timeout
                             else:
                                 pending.append(raw)

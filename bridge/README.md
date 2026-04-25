@@ -151,6 +151,11 @@ file, or defaults. All settings have sensible defaults for RPi4.
 | **Reconnection** | | |
 | `PIDOG_WS_RECONNECT_DELAY` | `2.0` | Initial WS reconnect delay (seconds) |
 | `PIDOG_WS_MAX_RECONNECT_DELAY` | `60.0` | Max WS reconnect delay (seconds) |
+| **LCD** | | |
+| `PIDOG_LCD_ENABLED` | `false` | `true` to enable LCD1602 display |
+| `PIDOG_LCD_ADDRESS` | `0x27` | I2C address (PCF8574T=`0x27`, PCF8574AT=`0x3F`) |
+| `PIDOG_LCD_BUS` | `1` | I2C bus number (1 on all modern RPi models) |
+| `PIDOG_LCD_SCROLL_DELAY` | `0.35` | Seconds between scroll steps |
 
 ### Optional TOML Config
 
@@ -173,6 +178,67 @@ tts_voice = "your-voice-id"
 ```
 
 Then set: `export PIDOG_CONFIG=/home/pi/pidog-zenii/bridge_config.toml`
+
+### LCD1602 Display (optional)
+
+The bridge supports an **LCD1602 with PCF8574 I2C backpack** (Freenove or compatible).
+When enabled it shows live sensor data, listening state, and the AI response as it streams.
+
+**What is displayed:**
+
+| State | Line 1 | Line 2 |
+|-------|--------|--------|
+| Startup | `  Zenii PiDog  ` | `   I'm ready!  ` |
+| Listening (idle) | Rotating: distance / touch / sound / time | `... / .... / .....` dots animation |
+| User spoke | `>what you said` | `Thinking...` |
+| AI responding | `>what you said` | AI reply scrolling left |
+| Touch event | (sensor rotation) | `Touch: left` (2s) |
+| Obstacle | (sensor rotation) | `Obstacle 45cm!` (2s) |
+| Picked up | (sensor rotation) | `Picked up!` (2s) |
+| Shutdown | `  Shutting down` | `  Lying down...` |
+
+**Wiring (PCF8574 backpack → RPi4):**
+
+| LCD backpack pin | RPi4 pin | GPIO |
+|-----------------|----------|------|
+| VCC | Pin 2 | 5V |
+| GND | Pin 6 | GND |
+| SDA | Pin 3 | GPIO2 |
+| SCL | Pin 5 | GPIO3 |
+
+**Enable I2C on the Pi:**
+```bash
+sudo raspi-config nonint do_i2c 0
+sudo reboot
+# Verify address (should show 0x27 or 0x3F):
+sudo apt install -y i2c-tools
+i2cdetect -y 1
+```
+
+**Install smbus2:**
+```bash
+pip install smbus2          # inside venv (preferred)
+# or: sudo apt install python3-smbus
+```
+
+**TOML config** (add to `bridge_config.toml`):
+```toml
+[lcd]
+enabled = true
+address = 0x27    # use 0x3F if i2cdetect shows that address
+bus = 1
+scroll_delay = 0.35
+```
+
+**Troubleshooting:**
+
+| Issue | Fix |
+|-------|-----|
+| `smbus module not found` | `pip install smbus2` or `sudo apt install python3-smbus` |
+| LCD init fails silently | Run `i2cdetect -y 1` — address must show as `27` or `3f` |
+| Wrong address | Change `address = 0x3F` in config |
+| Backlight on but no text | I2C wiring issue — check SDA/SCL connections |
+| Nothing displayed | Check `lcd_enabled = true` is in `[lcd]` section (not under `[voice]`) |
 
 ---
 

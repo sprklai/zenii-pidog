@@ -72,10 +72,13 @@ class BridgeConfig:
     tts_model: str = "en_US-ryan-low"
     tts_binary: str = "piper"
     # Silence threshold as fraction of int16 max (0.0-1.0).
-    # Used as: rms_threshold = max(300, int(silence_threshold * 32767 * 0.5))
-    # 0.02 → RMS ~328   — picks up normal speech on RPi HAT mic (recommended)
-    # 0.10 → RMS ~1638  — louder environment, need to speak up
-    # 0.30 → RMS ~4915  — very loud environment only (was the broken default)
+    # Used as: rms_threshold = max(100, int(silence_threshold * 32767 * 0.5))
+    # 0.005 → RMS ~100  — very sensitive; use if mic level is low (check logs)
+    # 0.02  → RMS ~327  — default; picks up normal speech on RPi HAT mic
+    # 0.10  → RMS ~1638 — louder environment, need to speak up
+    # 0.30  → RMS ~4915 — very loud environment only (was the broken default)
+    # Tip: watch "MIC waiting for speech: peak RMS=N" in logs while speaking.
+    # If N is below the threshold, lower silence_threshold or fix mic_device.
     silence_threshold: float = 0.02
     # Recording window in seconds. 5s is suitable for short voice commands.
     listen_timeout_secs: float = 5.0
