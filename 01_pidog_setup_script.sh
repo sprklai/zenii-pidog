@@ -9,7 +9,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/sprklai/zenii-pidog/main/01_pidog_setup_script.sh | bash
 #   # or
-#   ZENII_VERSION=app-v0.1.10 bash 01_pidog_setup_script.sh
+#   ZENII_VERSION=app-v0.1.10 ZENII_TUI_VERSION=tui-v0.1.21 bash 01_pidog_setup_script.sh
 #
 # After running:
 #   1. Set your API key:  zenii key set anthropic
@@ -22,7 +22,8 @@ set -euo pipefail
 
 # --- Configuration (override with environment variables) ---
 ZENII_VERSION="${ZENII_VERSION:-app-v0.1.10}"
-GITHUB_REPO="sprklai/zenii"          # source of release binaries (zenii-daemon, zenii CLI)
+ZENII_TUI_VERSION="${ZENII_TUI_VERSION:-tui-v0.1.21}"
+GITHUB_REPO="sprklai/zenii"          # source of release binaries (zenii-daemon, zenii CLI, zenii-tui)
 PIDOG_REPO="sprklai/zenii-pidog"     # source of pidog scripts + bridge files
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="${HOME}/.config/zenii"
@@ -131,17 +132,22 @@ step "Downloading Zenii ${ZENII_VERSION} (ARM64)"
 
 DAEMON_URL="${RELEASE_URL}/zenii-daemon-arm64"
 CLI_URL="${RELEASE_URL}/zenii-arm64"
+TUI_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${ZENII_TUI_VERSION}"
+TUI_URL="${TUI_RELEASE_URL}/zenii-tui-arm64"
 
 download_file "${DAEMON_URL}" "${TMP_DIR}/zenii-daemon"
-download_file "${CLI_URL}" "${TMP_DIR}/zenii"
+download_file "${CLI_URL}"    "${TMP_DIR}/zenii"
+download_file "${TUI_URL}"    "${TMP_DIR}/zenii-tui"
 
 step "Installing binaries to ${INSTALL_DIR}"
 
 ${SUDO} install -m 755 "${TMP_DIR}/zenii-daemon" "${INSTALL_DIR}/zenii-daemon"
 ${SUDO} install -m 755 "${TMP_DIR}/zenii"        "${INSTALL_DIR}/zenii"
+${SUDO} install -m 755 "${TMP_DIR}/zenii-tui"    "${INSTALL_DIR}/zenii-tui"
 
 ok "zenii-daemon -> ${INSTALL_DIR}/zenii-daemon ($(du -h "${INSTALL_DIR}/zenii-daemon" | cut -f1))"
 ok "zenii        -> ${INSTALL_DIR}/zenii ($(du -h "${INSTALL_DIR}/zenii" | cut -f1))"
+ok "zenii-tui    -> ${INSTALL_DIR}/zenii-tui ($(du -h "${INSTALL_DIR}/zenii-tui" | cut -f1))"
 
 # =============================================================================
 # Step 3: Create config.toml (lean RPi4 config)
@@ -512,6 +518,7 @@ echo ""
 echo -e "  ${BOLD}Binaries${NC}"
 echo -e "    Daemon:  ${INSTALL_DIR}/zenii-daemon"
 echo -e "    CLI:     ${INSTALL_DIR}/zenii"
+echo -e "    TUI:     ${INSTALL_DIR}/zenii-tui"
 echo ""
 echo -e "  ${BOLD}Config${NC}"
 echo -e "    Config:    ${CONFIG_DIR}/config.toml"
