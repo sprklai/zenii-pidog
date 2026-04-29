@@ -697,7 +697,7 @@ class PiDogZeniiBridge:
                first sentence arrives (~0.8s) → TTS starts
                remaining sentences yield as LLM streams
         """
-        logger.info(">>> LLM prompt:\n%s", prompt)
+        logger.debug(">>> LLM prompt:\n%s", prompt)
         # ws_send_prompt handles reconnect internally under _ws_lock — no pre-call needed.
         await self._client.ws_send_prompt(prompt, self._session_id)
 
