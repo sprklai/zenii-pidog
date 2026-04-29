@@ -1,6 +1,7 @@
 # Core (always required)
 aiohttp>=3.9,<4
-smbus2>=0.4.1  # LCD1602 I2C display (install in venv: pip install smbus2)
+smbus2>=0.4.1   # LCD1602 I2C display
+gpiozero>=2.0   # required by robot_hat / pidog on Python 3.13
 
 # Local voice (Vosk STT + Piper TTS) — install for PIDOG_VOICE_PROVIDER=local
 vosk>=0.3.45
