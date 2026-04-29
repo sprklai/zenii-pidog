@@ -138,6 +138,9 @@ class BridgeConfig:
     lcd_i2c_address: int = 0x27   # 0x27 (PCF8574T) or 0x3F (PCF8574AT)
     lcd_i2c_bus: int = 1
     lcd_scroll_delay_secs: float = 0.35
+    # How long to keep the response visible on line 2 after TTS finishes.
+    # Long responses continue scrolling during this window; short ones show statically.
+    lcd_response_linger_secs: float = 3.0
 
     @classmethod
     def load(cls, toml_path: str | None = None) -> BridgeConfig:
@@ -311,6 +314,7 @@ class BridgeConfig:
             "ws_reconnect_delay_secs", "ws_max_reconnect_delay_secs",
             "health_check_interval_secs",
             "lcd_enabled", "lcd_i2c_address", "lcd_i2c_bus", "lcd_scroll_delay_secs",
+            "lcd_response_linger_secs",
             "echo_prevention_secs",
         ]
         for key in simple_keys:

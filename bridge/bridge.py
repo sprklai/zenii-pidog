@@ -554,10 +554,23 @@ class PiDogZeniiBridge:
                     )
 
                 stop_scroll.set()
-                if self._lcd:
-                    self._fire_and_forget(asyncio.to_thread(self._lcd.show, 2, " " * 16))
+
+                # Scroll the full response on line 2 during the post-TTS linger
+                # so the user can read it. For short text it shows statically.
+                post_stop = threading.Event()
+                if self._lcd and response_sentences:
+                    full_text = " ".join(response_sentences)
+                    self._fire_and_forget(
+                        asyncio.to_thread(
+                            self._lcd.scroll, 2, full_text,
+                            self._config.lcd_scroll_delay_secs, post_stop,
+                        )
+                    )
 
                 if timed_out:
+                    post_stop.set()
+                    if self._lcd:
+                        self._fire_and_forget(asyncio.to_thread(self._lcd.show, 2, " " * 16))
                     self._enqueue_action(LEDS_ALERT)
                     await asyncio.sleep(1)
                     self._enqueue_action(LEDS_LISTENING)
@@ -566,8 +579,13 @@ class PiDogZeniiBridge:
 
                 if spoke:
                     await asyncio.sleep(self._config.echo_prevention_secs)
+                    await asyncio.sleep(self._config.lcd_response_linger_secs)
                 else:
                     logger.warning("LLM returned no text")
+
+                post_stop.set()
+                if self._lcd:
+                    self._fire_and_forget(asyncio.to_thread(self._lcd.show, 2, " " * 16))
 
                 # Done speaking — back to listening
                 self._enqueue_action(LEDS_LISTENING)
