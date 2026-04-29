@@ -167,7 +167,6 @@ class PiDogZeniiBridge:
         # Track fire-and-forget tasks for clean shutdown
         self._bg_tasks: set[asyncio.Task] = set()
         self._lcd_dots_task: asyncio.Task | None = None
-        self._lcd_sensor_task: asyncio.Task | None = None
         self._lcd_listening_active: bool = False
 
     # -- Lifecycle --
@@ -456,18 +455,12 @@ class PiDogZeniiBridge:
         if self._lcd_dots_task and not self._lcd_dots_task.done():
             self._lcd_dots_task.cancel()
         self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
-        if self._lcd_sensor_task and not self._lcd_sensor_task.done():
-            self._lcd_sensor_task.cancel()
-        self._lcd_sensor_task = asyncio.create_task(self._lcd_sensor_rotation_animation())
 
     def _stop_lcd_listening(self) -> None:
         self._lcd_listening_active = False
         if self._lcd_dots_task and not self._lcd_dots_task.done():
             self._lcd_dots_task.cancel()
         self._lcd_dots_task = None
-        if self._lcd_sensor_task and not self._lcd_sensor_task.done():
-            self._lcd_sensor_task.cancel()
-        self._lcd_sensor_task = None
 
     async def _lcd_listening_animation(self) -> None:
         patterns = ["Listening .   ", "Listening ..  ", "Listening ... "]
@@ -480,44 +473,6 @@ class PiDogZeniiBridge:
         except asyncio.CancelledError:
             pass
 
-    async def _lcd_sensor_rotation_animation(self) -> None:
-        i = 0
-        try:
-            while True:
-                sensor = self._last_sensor
-                if sensor is not None:
-                    items = [
-                        f"Dist: {sensor.distance_cm}cm".ljust(16),
-                        f"Touch: {sensor.touch}".ljust(16),
-                        f"Sound: {sensor.sound_direction_deg}deg".ljust(16),
-                    ]
-                    if abs(sensor.pitch) > 5 or abs(sensor.roll) > 5:
-                        items.append(
-                            f"P:{sensor.pitch:.1f} R:{sensor.roll:.1f}"[:16].ljust(16)
-                        )
-                    await asyncio.to_thread(self._lcd.show, 1, items[i % len(items)])
-                    i += 1
-                await asyncio.sleep(3.0)
-        except asyncio.CancelledError:
-            pass
-
-    async def _lcd_alert_line2(self, text: str, duration: float = 2.0) -> None:
-        """Briefly show an event alert on LCD line 2, then resume listening dots."""
-        if self._lcd is None:
-            return
-        if self._lcd_dots_task and not self._lcd_dots_task.done():
-            self._lcd_dots_task.cancel()
-            self._lcd_dots_task = None
-        try:
-            await asyncio.to_thread(self._lcd.show, 2, text[:16].ljust(16))
-            await asyncio.sleep(duration)
-        except asyncio.CancelledError:
-            return
-        # Only create a new dots task if _start_lcd_listening() hasn't already created
-        # one during our sleep — otherwise we'd leak a second animation coroutine.
-        if self._lcd_listening_active and not self._shutdown_event.is_set():
-            if self._lcd_dots_task is None or self._lcd_dots_task.done():
-                self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
 
     # -- Voice Loop --
 
@@ -864,9 +819,6 @@ class PiDogZeniiBridge:
                 self._enqueue_action(LEDS_HAPPY)
                 self._fire_and_forget(self._reset_leds_after(3.0))
                 self._fire_and_forget(
-                    self._lcd_alert_line2(f"Touch: {reading.touch}")
-                )
-                self._fire_and_forget(
                     self._store_event(
                         f"pidog:event:touch:{int(now)}",
                         f"Someone is petting my head (touch: {reading.touch})",
@@ -880,9 +832,6 @@ class PiDogZeniiBridge:
                 self._enqueue_action(LEDS_ALERT)
                 self._fire_and_forget(self._reset_leds_after(5.0))
                 self._fire_and_forget(
-                    self._lcd_alert_line2(f"Obstacle {reading.distance_cm}cm!")
-                )
-                self._fire_and_forget(
                     self._store_event(
                         f"pidog:event:obstacle:{int(now)}",
                         f"Obstacle detected at {reading.distance_cm}cm",
@@ -894,7 +843,6 @@ class PiDogZeniiBridge:
             pitch_delta = abs(reading.pitch - self._last_sensor.pitch)
             roll_delta = abs(reading.roll - self._last_sensor.roll)
             if pitch_delta > 15 or roll_delta > 15:
-                self._fire_and_forget(self._lcd_alert_line2("Picked up!"))
                 self._fire_and_forget(
                     self._store_event(
                         f"pidog:event:imu:{int(now)}",
