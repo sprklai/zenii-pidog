@@ -173,10 +173,17 @@ else
 fi
 
 # =============================================================================
-# 3. Verify config and venv exist
+# 3. Verify config and venv exist; sync Python dependencies
 # =============================================================================
 [[ -f "${PIDOG_CONFIG}" ]] || die "Config not found: ${PIDOG_CONFIG}"
 [[ -f "${VENV_ACTIVATE}" ]] || die "Venv not found: ${VENV_ACTIVATE}"
+
+REQUIREMENTS="${SCRIPT_DIR}/bridge/requirements.txt"
+if [[ -f "${REQUIREMENTS}" ]]; then
+    info "Syncing Python dependencies..."
+    "${RUNTIME_BASE}/.venv/bin/pip" install --quiet -r "${REQUIREMENTS}"
+    ok "Dependencies up to date"
+fi
 echo ""
 
 # =============================================================================
