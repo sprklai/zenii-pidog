@@ -366,7 +366,8 @@ class CloudVoice(VoiceInterface):
         speech_started = False
         silence_count = 0
         wait_count = 0
-        peak_rms = 0
+        peak_rms = 0        # rolling peak for log line, reset each second
+        overall_max_rms = 0  # never reset — used in timeout warning
 
         logger.info("MIC listening (VAD threshold RMS=%d, device=%s), speak now...",
                     rms_threshold, device if device is not None else "default")
@@ -385,6 +386,7 @@ class CloudVoice(VoiceInterface):
 
                     if not speech_started:
                         peak_rms = max(peak_rms, rms)
+                        overall_max_rms = max(overall_max_rms, rms)
                         wait_count += 1
                         if wait_count % log_interval == 0:
                             logger.info(
@@ -402,10 +404,11 @@ class CloudVoice(VoiceInterface):
                             logger.warning(
                                 "VAD timeout: no speech detected in %.1fs "
                                 "(max RMS seen: %d, threshold: %d). "
-                                "If you spoke, lower silence_threshold in bridge_config.toml "
-                                "or set mic_device to the correct device index "
+                                "Your mic is too quiet — lower silence_threshold in "
+                                "bridge_config.toml (try 0.002) or set mic_device to "
+                                "the correct device index "
                                 "(run: python3 -c \"import sounddevice; print(sounddevice.query_devices())\")",
-                                self._config.listen_timeout_secs, peak_rms, rms_threshold,
+                                self._config.listen_timeout_secs, overall_max_rms, rms_threshold,
                             )
                             return None  # timeout — no speech
                     else:
@@ -807,7 +810,8 @@ class CloudVoice(VoiceInterface):
                         speech_started = False
                         silence_count = 0
                         wait_count = 0
-                        peak_rms = 0
+                        peak_rms = 0      # rolling peak for log line, reset each second
+                        overall_max_rms = 0  # never reset — used in timeout warning
 
                         while True:
                             raw = await loop.run_in_executor(self._executor, audio_q.get)
@@ -819,6 +823,7 @@ class CloudVoice(VoiceInterface):
 
                             if not speech_started:
                                 peak_rms = max(peak_rms, rms)
+                                overall_max_rms = max(overall_max_rms, rms)
                                 wait_count += 1
                                 # Log peak RMS every second so mic levels are visible
                                 if wait_count % log_interval == 0:
@@ -837,10 +842,11 @@ class CloudVoice(VoiceInterface):
                                     logger.warning(
                                         "VAD timeout: no speech detected in %.1fs "
                                         "(max RMS seen: %d, threshold: %d). "
-                                        "If you spoke, lower silence_threshold in bridge_config.toml "
-                                        "or set mic_device to the correct device index "
+                                        "Your mic is too quiet — lower silence_threshold in "
+                                        "bridge_config.toml (try 0.002) or set mic_device to "
+                                        "the correct device index "
                                         "(run: python3 -c \"import sounddevice; print(sounddevice.query_devices())\")",
-                                        self._config.listen_timeout_secs, peak_rms, rms_threshold,
+                                        self._config.listen_timeout_secs, overall_max_rms, rms_threshold,
                                     )
                                     break  # no speech within timeout
                             else:
