@@ -167,6 +167,7 @@ class PiDogZeniiBridge:
         # Track fire-and-forget tasks for clean shutdown
         self._bg_tasks: set[asyncio.Task] = set()
         self._lcd_dots_task: asyncio.Task | None = None
+        self._lcd_line1_task: asyncio.Task | None = None
         self._lcd_listening_active: bool = False
         # False when /identity/ is not supported — SOUL is embedded in prompt instead.
         self._soul_in_identity: bool = False
@@ -465,12 +466,23 @@ class PiDogZeniiBridge:
         if self._lcd_dots_task and not self._lcd_dots_task.done():
             self._lcd_dots_task.cancel()
         self._lcd_dots_task = asyncio.create_task(self._lcd_listening_animation())
+        if self._lcd_line1_task and not self._lcd_line1_task.done():
+            self._lcd_line1_task.cancel()
+        self._lcd_line1_task = None
 
     def _stop_lcd_listening(self) -> None:
         self._lcd_listening_active = False
         if self._lcd_dots_task and not self._lcd_dots_task.done():
             self._lcd_dots_task.cancel()
         self._lcd_dots_task = None
+
+    def _start_lcd_line1_scroll(self, text: str) -> None:
+        """Loop-scroll user question on line 1 until the next _start_lcd_listening call."""
+        if self._lcd is None:
+            return
+        if self._lcd_line1_task and not self._lcd_line1_task.done():
+            self._lcd_line1_task.cancel()
+        self._lcd_line1_task = asyncio.create_task(self._lcd_line1_scroll_animation(text))
 
     async def _lcd_listening_animation(self) -> None:
         patterns = ["Listening .   ", "Listening ..  ", "Listening ... "]
@@ -482,6 +494,18 @@ class PiDogZeniiBridge:
                 await asyncio.sleep(0.6)
         except asyncio.CancelledError:
             pass
+
+    async def _lcd_line1_scroll_animation(self, text: str) -> None:
+        scroll_stop = threading.Event()
+        display_text = (">" + text)[:128]  # cap to avoid runaway scroll on very long input
+        try:
+            while True:
+                await asyncio.to_thread(
+                    self._lcd.scroll, 1, display_text,
+                    self._config.lcd_scroll_delay_secs, scroll_stop,
+                )
+        except asyncio.CancelledError:
+            scroll_stop.set()  # unblock the thread immediately
 
 
     # -- Voice Loop --
@@ -516,11 +540,10 @@ class PiDogZeniiBridge:
 
                 logger.info("User: %s", text)
                 self._stop_lcd_listening()
+                self._enqueue_action(PiDogAction(action="sit", speed=self._config.default_action_speed))
 
                 if self._lcd:
-                    self._fire_and_forget(
-                        asyncio.to_thread(self._lcd.show, 1, (">" + text)[:16].ljust(16))
-                    )
+                    self._start_lcd_line1_scroll(text)
                     self._fire_and_forget(
                         asyncio.to_thread(self._lcd.show, 2, "Thinking...     ")
                     )
@@ -541,6 +564,7 @@ class PiDogZeniiBridge:
                     async with asyncio.timeout(self._config.ws_chat_timeout_secs):
                         async for sentence in self._ws_chat_stream(prompt):
                             if not spoke:
+                                self._enqueue_action(PiDogAction(action="stand", speed=self._config.default_action_speed))
                                 # First sentence ready — start LCD scroll for full response
                                 # (we don't have the full text yet, so scroll this sentence)
                                 if self._lcd:
@@ -588,6 +612,10 @@ class PiDogZeniiBridge:
                     continue
 
                 if spoke:
+                    # Look around then lie down while LCD lingers on the response
+                    self._enqueue_action(PiDogAction(action="tilting_head_left",  speed=self._config.default_action_speed))
+                    self._enqueue_action(PiDogAction(action="tilting_head_right", speed=self._config.default_action_speed))
+                    self._enqueue_action(PiDogAction(action="lie", speed=50))
                     await asyncio.sleep(self._config.echo_prevention_secs)
                     await asyncio.sleep(self._config.lcd_response_linger_secs)
                 else:
