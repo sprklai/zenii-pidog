@@ -9,7 +9,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/sprklai/zenii-pidog/main/01_pidog_setup_script.sh | bash
 #   # or
-#   ZENII_VERSION=app-v0.1.10 ZENII_TUI_VERSION=tui-v0.1.21 bash 01_pidog_setup_script.sh
+#   ZENII_VERSION=app-v0.1.21 bash 01_pidog_setup_script.sh
 #
 # After running:
 #   1. Set your API key:  zenii key set anthropic
@@ -21,8 +21,7 @@
 set -euo pipefail
 
 # --- Configuration (override with environment variables) ---
-ZENII_VERSION="${ZENII_VERSION:-app-v0.1.10}"
-ZENII_TUI_VERSION="${ZENII_TUI_VERSION:-tui-v0.1.21}"
+ZENII_VERSION="${ZENII_VERSION:-app-v0.1.21}"
 GITHUB_REPO="sprklai/zenii"          # source of release binaries (zenii-daemon, zenii CLI, zenii-tui)
 PIDOG_REPO="sprklai/zenii-pidog"     # source of pidog scripts + bridge files
 INSTALL_DIR="/usr/local/bin"
@@ -132,8 +131,7 @@ step "Downloading Zenii ${ZENII_VERSION} (ARM64)"
 
 DAEMON_URL="${RELEASE_URL}/zenii-daemon-arm64"
 CLI_URL="${RELEASE_URL}/zenii-arm64"
-TUI_RELEASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${ZENII_TUI_VERSION}"
-TUI_URL="${TUI_RELEASE_URL}/zenii-tui-arm64"
+TUI_URL="${RELEASE_URL}/zenii-tui-linux"
 
 download_file "${DAEMON_URL}" "${TMP_DIR}/zenii-daemon"
 download_file "${CLI_URL}"    "${TMP_DIR}/zenii"
