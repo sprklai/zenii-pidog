@@ -168,6 +168,8 @@ class PiDogZeniiBridge:
         self._bg_tasks: set[asyncio.Task] = set()
         self._lcd_dots_task: asyncio.Task | None = None
         self._lcd_listening_active: bool = False
+        # False when /identity/ is not supported — SOUL is embedded in prompt instead.
+        self._soul_in_identity: bool = False
 
     # -- Lifecycle --
 
@@ -318,8 +320,10 @@ class PiDogZeniiBridge:
 
         Zenii auto-injects identity files into every session as a system prompt,
         so the soul persists across restarts without any LLM round-trip.
-        Only writes when the content has changed (hash check), so subsequent
-        startups are instant.
+        Upload is skipped when content is unchanged, but reload is always called
+        so the soul is active even after the Zenii daemon restarts.
+        If /identity/ is unsupported, _soul_in_identity stays False and
+        _build_prompt embeds the SOUL directly in every user prompt.
         """
         soul_hash = hashlib.sha256(PIDOG_SOUL.encode()).hexdigest()[:16]
         try:
@@ -330,23 +334,29 @@ class PiDogZeniiBridge:
             # Embed the hash as a comment in the stored content so we can detect
             # stale uploads without a full string compare.
             if current and f"soul_hash:{soul_hash}" in current:
-                logger.info("PiDog soul already current (hash=%s) — skipping upload", soul_hash)
-                return
+                logger.info("PiDog soul already current (hash=%s) — reloading", soul_hash)
+            else:
+                content = f"<!-- soul_hash:{soul_hash} -->\n{PIDOG_SOUL}"
+                await asyncio.wait_for(
+                    self._client.update_identity("SOUL.md", content),
+                    timeout=5.0,
+                )
+                logger.info("PiDog soul uploaded to /identity/SOUL.md (hash=%s)", soul_hash)
 
-            content = f"<!-- soul_hash:{soul_hash} -->\n{PIDOG_SOUL}"
-            await asyncio.wait_for(
-                self._client.update_identity("SOUL.md", content),
-                timeout=5.0,
-            )
+            # Always reload so the daemon picks up the soul after its own restart.
             await asyncio.wait_for(
                 self._client.reload_identity(),
                 timeout=5.0,
             )
-            logger.info("PiDog soul uploaded to /identity/SOUL.md (hash=%s)", soul_hash)
+            self._soul_in_identity = True
+            logger.info("PiDog soul active in Zenii identity")
         except aiohttp.ClientResponseError as exc:
             if exc.status == 404:
-                # /identity/ endpoint not available on this daemon version — skip silently.
-                logger.debug("Soul upload skipped: /identity/ not supported by this daemon")
+                # /identity/ endpoint not available — fall back to inline prompt injection.
+                logger.warning(
+                    "Soul upload skipped: /identity/ not supported — "
+                    "SOUL will be embedded in every prompt instead"
+                )
             else:
                 logger.warning("Failed to upload soul to /identity/SOUL.md: %s", exc)
         except Exception as exc:
@@ -617,9 +627,12 @@ class PiDogZeniiBridge:
 
         Memory recall uses Zenii's hybrid FTS5+vector search so the AI has
         relevant past context (events, observations) without manual tracking.
-        The soul/action-tag rules live in SOUL.md and are injected by Zenii.
+        When /identity/ is unavailable, the SOUL is embedded here directly.
         """
         parts: list[str] = []
+
+        if not self._soul_in_identity:
+            parts.append(PIDOG_SOUL)
 
         if self._last_sensor:
             parts.append(self._last_sensor.to_context_string())
